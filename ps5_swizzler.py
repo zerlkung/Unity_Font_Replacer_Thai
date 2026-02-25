@@ -14,6 +14,16 @@ _PS5_MICRO_X_BITS = 5   # 32-pixel wide micro-tile (8bpp)
 _PS5_MICRO_Y_BITS = 4   # 16-pixel tall micro-tile (8bpp)
 
 
+def _dimensions_supported(width: int, height: int) -> bool:
+    if width <= 0 or height <= 0:
+        return False
+    if width & (width - 1) or height & (height - 1):
+        return False
+    micro_w = 1 << _PS5_MICRO_X_BITS
+    micro_h = 1 << _PS5_MICRO_Y_BITS
+    return width >= micro_w and height >= micro_h
+
+
 @lru_cache(maxsize=64)
 def compute_ps5_swizzle_masks(width: int, height: int) -> tuple[int, int]:
     """Compute PS5 swizzle bit-masks for the given power-of-two dimensions.
@@ -258,6 +268,96 @@ def roughness_score(
     return float(dx + dy)
 
 
+def unswizzle_best_variant(
+    data: bytes,
+    width: int,
+    height: int,
+    bytes_per_element: int,
+    mask_x: int | None = None,
+    mask_y: int | None = None,
+    allow_axis_swap: bool = False,
+) -> tuple[bytes, int, int, str, float]:
+    """Pick the best unswizzle candidate between normal and swapped-axis variants."""
+    data, _ = _clip_to_base_level(data, width, height, bytes_per_element)
+    if mask_x is None or mask_y is None:
+        mask_x, mask_y = compute_ps5_swizzle_masks(width, height)
+
+    normal = unswizzle(data, width, height, bytes_per_element, mask_x, mask_y)
+    normal_score = roughness_score(normal, width, height, bytes_per_element)
+
+    best_data = normal
+    best_width = width
+    best_height = height
+    best_variant = "normal"
+    best_score = normal_score
+
+    if allow_axis_swap and width != height and _dimensions_supported(height, width):
+        try:
+            swap_mask_x, swap_mask_y = compute_ps5_swizzle_masks(height, width)
+            swapped = unswizzle(
+                data,
+                height,
+                width,
+                bytes_per_element,
+                swap_mask_x,
+                swap_mask_y,
+            )
+            swapped_score = roughness_score(swapped, height, width, bytes_per_element)
+            if swapped_score <= normal_score * 0.985:
+                best_data = swapped
+                best_width = height
+                best_height = width
+                best_variant = "swapped_axes"
+                best_score = swapped_score
+        except Exception:
+            pass
+
+    return best_data, best_width, best_height, best_variant, best_score
+
+
+def detect_swizzle_state_detail(
+    data: bytes,
+    width: int,
+    height: int,
+    bytes_per_element: int,
+    mask_x: int,
+    mask_y: int,
+    allow_axis_swap: bool = False,
+) -> tuple[str, float, float, float, bytes, bytes, int, int, str]:
+    data, _ = _clip_to_base_level(data, width, height, bytes_per_element)
+    raw_score = roughness_score(data, width, height, bytes_per_element)
+    unswizzled, unsw_w, unsw_h, unsw_variant, unsw_score = unswizzle_best_variant(
+        data,
+        width,
+        height,
+        bytes_per_element,
+        mask_x=mask_x,
+        mask_y=mask_y,
+        allow_axis_swap=allow_axis_swap,
+    )
+    swizzled = swizzle(data, width, height, bytes_per_element, mask_x, mask_y)
+    swz_score = roughness_score(swizzled, width, height, bytes_per_element)
+
+    if unsw_score < raw_score * 0.92 and unsw_score <= swz_score * 0.98:
+        verdict = "likely_swizzled_input"
+    elif raw_score <= unsw_score * 0.92 and raw_score <= swz_score * 0.92:
+        verdict = "likely_linear_input"
+    else:
+        verdict = "inconclusive"
+
+    return (
+        verdict,
+        raw_score,
+        unsw_score,
+        swz_score,
+        unswizzled,
+        swizzled,
+        unsw_w,
+        unsw_h,
+        unsw_variant,
+    )
+
+
 def detect_swizzle_state(
     data: bytes,
     width: int,
@@ -266,21 +366,15 @@ def detect_swizzle_state(
     mask_x: int,
     mask_y: int,
 ) -> tuple[str, float, float, float, bytes, bytes]:
-    data, _ = _clip_to_base_level(data, width, height, bytes_per_element)
-    raw_score = roughness_score(data, width, height, bytes_per_element)
-    unswizzled = unswizzle(data, width, height, bytes_per_element, mask_x, mask_y)
-    swizzled = swizzle(data, width, height, bytes_per_element, mask_x, mask_y)
-    unsw_score = roughness_score(unswizzled, width, height, bytes_per_element)
-    swz_score = roughness_score(swizzled, width, height, bytes_per_element)
-
-    # Lower score generally means better local coherence.
-    if unsw_score < raw_score * 0.92 and unsw_score <= swz_score * 0.98:
-        verdict = "likely_swizzled_input"
-    elif raw_score <= unsw_score * 0.92 and raw_score <= swz_score * 0.92:
-        verdict = "likely_linear_input"
-    else:
-        verdict = "inconclusive"
-
+    verdict, raw_score, unsw_score, swz_score, unswizzled, swizzled, _, _, _ = detect_swizzle_state_detail(
+        data,
+        width,
+        height,
+        bytes_per_element,
+        mask_x,
+        mask_y,
+        allow_axis_swap=False,
+    )
     return verdict, raw_score, unsw_score, swz_score, unswizzled, swizzled
 
 
@@ -336,6 +430,12 @@ def parse_args() -> argparse.Namespace:
                    help="Preview/output image rotation: 0/90/180/270 (default: unswizzle=90, else=0)")
     p.add_argument("--hflip", action="store_true", help="Apply horizontal flip to output preview image(s)")
     p.add_argument("--vflip", action="store_true", help="Apply vertical flip to output preview image(s)")
+    p.add_argument(
+        "--axis-swap",
+        choices=["auto", "off"],
+        default="auto",
+        help="For non-square unswizzle: try swapped width/height candidate and keep the more coherent result (default: auto)",
+    )
     return p.parse_args()
 
 
@@ -349,6 +449,8 @@ def main() -> None:
     args = parse_args()
     input_path = Path(args.input)
     input_format = _resolve_input_format(input_path, args.input_format)
+    mask_was_explicit = args.mask_x is not None and args.mask_y is not None
+    allow_axis_swap = args.axis_swap == "auto" and not mask_was_explicit
 
     if args.rotate is None:
         args.rotate = PS5_SWIZZLE_ROTATE if args.mode == "unswizzle" else 0
@@ -396,13 +498,14 @@ def main() -> None:
         args.mask_x, args.mask_y = compute_ps5_swizzle_masks(width, height)
 
     if args.mode == "detect":
-        verdict, raw_score, unsw_score, swz_score, unsw_data, swz_data = detect_swizzle_state(
+        verdict, raw_score, unsw_score, swz_score, unsw_data, swz_data, unsw_w, unsw_h, unsw_variant = detect_swizzle_state_detail(
             data,
             width,
             height,
             bytes_per_element,
             args.mask_x,
             args.mask_y,
+            allow_axis_swap=allow_axis_swap,
         )
 
         print("Detect")
@@ -412,6 +515,7 @@ def main() -> None:
         print(f"  bpe         : {bytes_per_element}")
         print(f"  raw score   : {raw_score:.6f}")
         print(f"  unsw score  : {unsw_score:.6f}")
+        print(f"  unsw variant: {unsw_variant}")
         print(f"  swz score   : {swz_score:.6f}")
         print(f"  verdict     : {verdict}")
         if verdict == "likely_swizzled_input":
@@ -429,7 +533,7 @@ def main() -> None:
                 args.vflip,
             ).convert("RGB")
             unsw_img = apply_transforms(
-                _bytes_to_image(unsw_data, width, height, bytes_per_element),
+                _bytes_to_image(unsw_data, unsw_w, unsw_h, bytes_per_element),
                 args.rotate,
                 args.hflip,
                 args.vflip,
@@ -471,15 +575,19 @@ def main() -> None:
         return
 
     if args.mode == "unswizzle":
-        out = unswizzle(
+        out, out_w, out_h, out_variant, _ = unswizzle_best_variant(
             data=data,
             width=width,
             height=height,
             bytes_per_element=bytes_per_element,
             mask_x=args.mask_x,
             mask_y=args.mask_y,
+            allow_axis_swap=allow_axis_swap,
         )
     else:
+        out_w = width
+        out_h = height
+        out_variant = "n/a"
         out = swizzle(
             data=data,
             width=width,
@@ -492,7 +600,7 @@ def main() -> None:
     if args.output_bin:
         Path(args.output_bin).write_bytes(out)
     if args.output_png:
-        img = _bytes_to_image(out, width, height, bytes_per_element)
+        img = _bytes_to_image(out, out_w, out_h, bytes_per_element)
         img = apply_transforms(img, args.rotate, args.hflip, args.vflip)
         img.save(args.output_png)
 
@@ -501,6 +609,9 @@ def main() -> None:
     print(f"  input      : {args.input}")
     print(f"  format     : {input_format}")
     print(f"  size       : {width}x{height}")
+    if args.mode == "unswizzle":
+        print(f"  unsw variant: {out_variant}")
+        print(f"  out size   : {out_w}x{out_h}")
     print(f"  bpe        : {bytes_per_element}")
     if args.output_bin:
         print(f"  output bin : {args.output_bin}")

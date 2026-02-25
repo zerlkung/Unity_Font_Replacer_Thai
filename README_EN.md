@@ -12,12 +12,12 @@ After extracting a release ZIP, the folder typically looks like this:
 release_en/
 ├── unity_font_replacer_en.exe
 ├── export_fonts_en.exe
-├── make_sdf.exe
-├── ps5_swizzler.exe
 ├── KR_ASSETS/
 ├── Il2CppDumper/
 └── README_EN.md
 ```
+
+`make_sdf.exe` and `ps5_swizzler.exe` are distributed as standalone ZIPs (`make_sdf_vX.Y.Z.zip`, `ps5_swizzler_vX.Y.Z.zip`).
 
 Recommended run:
 
@@ -32,8 +32,8 @@ unity_font_replacer_en.exe
 | `unity_font_replacer_en.exe` | Font replacement tool (English UI) |
 | `export_fonts.exe` | TMP SDF font exporter (Korean UI) |
 | `export_fonts_en.exe` | TMP SDF font exporter (English UI) |
-| `make_sdf.exe` | TTF -> TMP SDF JSON/Atlas generator |
-| `ps5_swizzler.exe` | Standalone PS5 swizzle/unswizzle/detect tool |
+| `make_sdf.exe` | TTF -> TMP SDF JSON/Atlas generator (standalone ZIP) |
+| `ps5_swizzler.exe` | Standalone PS5 swizzle/unswizzle/detect tool (standalone ZIP) |
 
 ---
 
@@ -435,6 +435,7 @@ Main modes:
 | `--width`, `--height` | Texture dimensions for BIN input |
 | `--bytes-per-element <N>` | Bytes per pixel element (e.g. Alpha8=1) |
 | `--mask-x`, `--mask-y` | Manual swizzle masks (default: auto from dimensions) |
+| `--axis-swap {auto,off}` | For non-square unswizzle, compare `(w,h)` and `(h,w)` candidates and keep the more coherent result |
 | `--output-bin <path>` | Binary output path |
 | `--output-png <path>` | PNG output path |
 | `--skip-bin`, `--skip-png` | Skip writing selected output type |
@@ -474,6 +475,10 @@ Run from Python source:
 ```bash
 python ps5_swizzler.py --mode detect --input atlas.bin --width 2048 --height 2048 --bytes-per-element 1
 ```
+
+Note:
+
+- `--axis-swap auto` automatically handles blocky/axis-mismatch artifacts seen on some non-square PS5 atlases.
 
 ---
 

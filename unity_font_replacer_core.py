@@ -658,18 +658,27 @@ def _load_target_unswizzled_preview_image(
                 except Exception:
                     base_data = raw_data
                 processed = base_data
+                preview_width = width
+                preview_height = height
                 if swizzle_verdict == "likely_swizzled_input":
                     try:
-                        processed = ps5_unswizzle_bytes(
+                        processed, preview_width, preview_height, _, _ = _ps5_unswizzle_best_variant(
                             base_data,
                             width,
                             height,
                             int(bpe),
+                            allow_axis_swap=True,
                         )
                     except Exception:
                         processed = base_data
+                        preview_width = width
+                        preview_height = height
                 mode_map = {1: "L", 2: "LA", 3: "RGB", 4: "RGBA"}
-                preview_image = Image.frombytes(mode_map[int(bpe)], (width, height), processed)
+                preview_image = Image.frombytes(
+                    mode_map[int(bpe)],
+                    (preview_width, preview_height),
+                    processed,
+                )
                 if swizzle_verdict == "likely_swizzled_input":
                     if preview_rotate % 360 != 0:
                         preview_image = preview_image.rotate(preview_rotate % 360, expand=True)
@@ -684,7 +693,11 @@ def _load_target_unswizzled_preview_image(
             preview_image = image
             if swizzle_verdict == "likely_swizzled_input":
                 try:
-                    preview_image = apply_ps5_unswizzle_to_image(preview_image, rotate=preview_rotate)
+                    preview_image = apply_ps5_unswizzle_to_image(
+                        preview_image,
+                        rotate=preview_rotate,
+                        allow_axis_swap=True,
+                    )
                 except Exception:
                     pass
             return preview_image
@@ -1148,6 +1161,65 @@ def detect_ps5_swizzle_state(
     return verdict, raw_score, unsw_score, swz_score, unswizzled, swizzled
 
 
+def _ps5_unswizzle_best_variant(
+    data: bytes,
+    width: int,
+    height: int,
+    bytes_per_element: int,
+    mask_x: int | None = None,
+    mask_y: int | None = None,
+    allow_axis_swap: bool = False,
+) -> tuple[bytes, int, int, str, float]:
+    """KR: unswizzle 결과(기본/축-스왑)를 비교해 더 연속적인 후보를 선택합니다.
+    EN: Compare unswizzle candidates (normal / axis-swapped) and pick the more coherent one.
+    """
+    clipped, _ = _ps5_clip_to_base_level(data, width, height, bytes_per_element)
+    normal = ps5_unswizzle_bytes(
+        clipped,
+        width,
+        height,
+        bytes_per_element,
+        mask_x=mask_x,
+        mask_y=mask_y,
+    )
+    normal_score = _ps5_roughness_score(normal, width, height, bytes_per_element)
+    best_data = normal
+    best_width = width
+    best_height = height
+    best_variant = "normal"
+    best_score = normal_score
+
+    # KR: 일부 non-square PS5 Atlas는 축이 바뀐 차원으로 unswizzle해야 올바르게 복원됩니다.
+    # EN: Some non-square PS5 atlases restore correctly only when unswizzled with swapped dimensions.
+    if (
+        allow_axis_swap
+        and mask_x is None
+        and mask_y is None
+        and width != height
+        and _ps5_dimensions_supported(height, width)
+    ):
+        try:
+            swapped = ps5_unswizzle_bytes(
+                clipped,
+                height,
+                width,
+                bytes_per_element,
+                mask_x=None,
+                mask_y=None,
+            )
+            swapped_score = _ps5_roughness_score(swapped, height, width, bytes_per_element)
+            if swapped_score <= normal_score * 0.985:
+                best_data = swapped
+                best_width = height
+                best_height = width
+                best_variant = "swapped_axes"
+                best_score = swapped_score
+        except Exception:
+            pass
+
+    return best_data, best_width, best_height, best_variant, best_score
+
+
 def detect_ps5_swizzle_state_from_image(
     image: Image.Image,
     mask_x: int | None = None,
@@ -1209,6 +1281,7 @@ def apply_ps5_unswizzle_to_image(
     mask_x: int | None = None,
     mask_y: int | None = None,
     rotate: int = PS5_SWIZZLE_ROTATE,
+    allow_axis_swap: bool = False,
 ) -> Image.Image:
     """KR: swizzled 이미지에 PS5 unswizzle 변환을 적용합니다.
     EN: Apply PS5 unswizzle transform to a swizzled image.
@@ -1218,15 +1291,16 @@ def apply_ps5_unswizzle_to_image(
         return prepared.copy()
     data = prepared.tobytes()
     bytes_per_element = len(prepared.getbands())
-    unswizzled = ps5_unswizzle_bytes(
+    unswizzled, out_width, out_height, _, _ = _ps5_unswizzle_best_variant(
         data,
         prepared.width,
         prepared.height,
         bytes_per_element,
         mask_x=mask_x,
         mask_y=mask_y,
+        allow_axis_swap=allow_axis_swap,
     )
-    output = Image.frombytes(prepared.mode, (prepared.width, prepared.height), unswizzled)
+    output = Image.frombytes(prepared.mode, (out_width, out_height), unswizzled)
     if rotate % 360 != 0:
         output = output.rotate(rotate % 360, expand=True)
     return output
@@ -2762,8 +2836,9 @@ def replace_fonts_in_file(
             continue
         texture_object_lookup[(item.assets_file.name, int(item.path_id))] = item
 
+    target_sdf_targets: set[tuple[str, int]] = set()
     target_sdf_pathids: set[int] = set()
-    target_sdf_font_by_pathid: dict[int, str] = {}
+    target_sdf_font_by_target: dict[tuple[str, int], str] = {}
     old_line_metric_keys = _OLD_LINE_METRIC_KEYS
     old_line_metric_scale_keys = _OLD_LINE_METRIC_SCALE_KEYS
     new_line_metric_keys = _NEW_LINE_METRIC_KEYS
@@ -2773,9 +2848,19 @@ def replace_fonts_in_file(
     if replace_sdf:
         for key, value in replacement_lookup.items():
             if len(key) == 4 and key[0] == "SDF" and key[1] == fn_without_path:
+                assets_key = key[2]
                 path_id = key[3]
+                target_key = (str(assets_key), int(path_id))
+                target_sdf_targets.add(target_key)
                 target_sdf_pathids.add(path_id)
-                target_sdf_font_by_pathid.setdefault(path_id, value)
+                target_sdf_font_by_target.setdefault(target_key, value)
+        if preview_export:
+            for file_name, assets_name, path_id in preview_target_lookup.keys():
+                if file_name != fn_without_path:
+                    continue
+                target_key = (str(assets_name), int(path_id))
+                target_sdf_targets.add(target_key)
+                target_sdf_pathids.add(int(path_id))
     matched_sdf_targets = 0
     patched_sdf_targets = 0
     sdf_parse_failure_reasons: list[str] = []
@@ -2818,7 +2903,8 @@ def replace_fonts_in_file(
 
         if obj.type.name == "MonoBehaviour" and replace_sdf:
             pathid = obj.path_id
-            if target_sdf_pathids and pathid not in target_sdf_pathids:
+            target_key = (assets_name, int(pathid))
+            if target_sdf_targets and target_key not in target_sdf_targets:
                 continue
             try:
                 parse_dict = obj.parse_as_dict()
@@ -2854,7 +2940,7 @@ def replace_fonts_in_file(
             objname = obj.peek_name()
             replacement_font = replacement_lookup.get(("SDF", fn_without_path, assets_name, pathid))
             if replacement_font is None:
-                replacement_font = target_sdf_font_by_pathid.get(pathid)
+                replacement_font = target_sdf_font_by_target.get(target_key)
 
             preview_target_meta = preview_target_lookup.get((fn_without_path, assets_name, int(pathid)))
             if replacement_font is None and preview_target_meta is not None and preview_export:
@@ -3730,16 +3816,16 @@ def replace_fonts_in_file(
                 print("  Error: failed to save file.")
                 if last_save_failure_reason:
                     print(f"  Failure reason: {last_save_failure_reason}")
-    elif replace_sdf and target_sdf_pathids:
+    elif replace_sdf and target_sdf_targets and not preview_export:
         if lang == "ko":
             print(
-                f"  경고: SDF 대상 {len(target_sdf_pathids)}건 중 매칭 {matched_sdf_targets}건, 적용 {patched_sdf_targets}건"
+                f"  경고: SDF 대상 {len(target_sdf_targets)}건 중 매칭 {matched_sdf_targets}건, 적용 {patched_sdf_targets}건"
             )
             if sdf_parse_failure_reasons:
                 print(f"  파싱 오류: {sdf_parse_failure_reasons[-1]}")
         else:
             print(
-                f"  Warning: SDF targets={len(target_sdf_pathids)}, matched={matched_sdf_targets}, patched={patched_sdf_targets}"
+                f"  Warning: SDF targets={len(target_sdf_targets)}, matched={matched_sdf_targets}, patched={patched_sdf_targets}"
             )
             if sdf_parse_failure_reasons:
                 print(f"  Parse error: {sdf_parse_failure_reasons[-1]}")

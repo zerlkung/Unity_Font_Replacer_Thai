@@ -12,12 +12,12 @@ Unity 게임의 폰트를 한글 폰트로 교체하는 도구입니다. TTF 폰
 release/
 ├── unity_font_replacer.exe
 ├── export_fonts.exe
-├── make_sdf.exe
-├── ps5_swizzler.exe
 ├── KR_ASSETS/
 ├── Il2CppDumper/
 └── README.md
 ```
+
+`make_sdf.exe`, `ps5_swizzler.exe`는 별도 단독 ZIP(`make_sdf_vX.Y.Z.zip`, `ps5_swizzler_vX.Y.Z.zip`)으로 제공합니다.
 
 권장 실행 방식:
 
@@ -32,8 +32,8 @@ unity_font_replacer.exe
 | `unity_font_replacer_en.exe` | 폰트 교체 도구 (영문 UI) |
 | `export_fonts.exe` | TMP SDF 폰트 추출 도구 (한국어 UI) |
 | `export_fonts_en.exe` | TMP SDF 폰트 추출 도구 (영문 UI) |
-| `make_sdf.exe` | TTF -> TMP SDF JSON/Atlas 생성 도구 |
-| `ps5_swizzler.exe` | PS5 swizzle/unswizzle/detect 단독 분석 도구 |
+| `make_sdf.exe` | TTF -> TMP SDF JSON/Atlas 생성 도구 (별도 단독 ZIP) |
+| `ps5_swizzler.exe` | PS5 swizzle/unswizzle/detect 단독 분석 도구 (별도 단독 ZIP) |
 
 ---
 
@@ -434,6 +434,7 @@ python export_fonts.py "D:\MyGame"
 | `--width`, `--height` | BIN 입력일 때 텍스처 크기 지정 |
 | `--bytes-per-element <N>` | 픽셀 요소 바이트 수 (예: Alpha8=1) |
 | `--mask-x`, `--mask-y` | swizzle mask 수동 지정 (기본: 크기 기반 자동 계산) |
+| `--axis-swap {auto,off}` | non-square unswizzle에서 `(w,h)`와 `(h,w)` 후보를 비교해 더 자연스러운 결과를 자동 선택 |
 | `--output-bin <경로>` | BIN 출력 경로 |
 | `--output-png <경로>` | PNG 출력 경로 |
 | `--skip-bin`, `--skip-png` | 해당 출력 타입 저장 생략 |
@@ -473,6 +474,10 @@ Python 소스로 실행할 경우:
 ```bash
 python ps5_swizzler.py --mode detect --input atlas.bin --width 2048 --height 2048 --bytes-per-element 1
 ```
+
+참고:
+
+- `--axis-swap auto`는 일부 PS5 non-square Atlas에서 발생하는 블록/축 꼬임을 자동으로 보정합니다.
 
 ---
 
