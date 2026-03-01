@@ -4486,7 +4486,6 @@ def parse_fonts(
             "Path_ID": font["path_id"],
             "Type": "TTF",
             "Name": font["name"],
-            "force_raster": "False",
             "Replace_to": "",
         }
 
@@ -6201,7 +6200,6 @@ def create_batch_replacements(
                 "Path_ID": font["path_id"],
                 "Type": "TTF",
                 "File": font["file"],
-                "force_raster": "False",
                 "Replace_to": font_name,
             }
 

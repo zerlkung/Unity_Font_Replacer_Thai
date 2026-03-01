@@ -179,7 +179,6 @@ JSON example (without `--ps5-swizzle`):
         "Path_ID": 123,
         "Type": "TTF",
         "Name": "Arial",
-        "force_raster": "False",
         "Replace_to": "Mulmaru"
     },
     "sharedassets0.assets|sharedassets0.assets|Arial SDF|SDF|456": {
@@ -196,7 +195,7 @@ JSON example (without `--ps5-swizzle`):
 
 ### force_raster field
 
-`--parse` JSON includes a `force_raster` field with default `"False"`.
+In `--parse` JSON, `force_raster` is included **only for SDF entries**, with default `"False"`.
 
 | Field | Description |
 |------|------|

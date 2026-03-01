@@ -179,7 +179,6 @@ JSON 예시 (`--ps5-swizzle` 미사용):
         "Path_ID": 123,
         "Type": "TTF",
         "Name": "Arial",
-        "force_raster": "False",
         "Replace_to": "Mulmaru"
     },
     "sharedassets0.assets|sharedassets0.assets|Arial SDF|SDF|456": {
@@ -196,7 +195,7 @@ JSON 예시 (`--ps5-swizzle` 미사용):
 
 ### force_raster 필드
 
-`--parse` JSON에는 기본값 `"False"`의 `force_raster` 필드가 포함됩니다.
+`--parse` JSON에서는 **SDF 항목에만** `force_raster` 필드가 포함되며 기본값은 `"False"`입니다.
 
 | 필드 | 설명 |
 |------|------|
