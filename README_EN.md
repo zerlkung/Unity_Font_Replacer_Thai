@@ -402,7 +402,7 @@ python export_fonts_en.py "D:\MyGame"
   Use `--use-game-material` to preserve original in-game material style.
 - You can set per-entry Raster forcing with JSON `force_raster: "True"` (default from `--parse`: `"False"`).
 - Use `--force-raster` to force Raster behavior for all SDF replacement entries.
-- For Raster-mode SDF replacement (per-entry `force_raster` or global `--force-raster`), SDF material effect floats (outline/underlay/glow) are neutralized to `0` to reduce box artifacts.
+- For Raster-mode SDF replacement (per-entry `force_raster` or global `--force-raster`), SDF material effect floats (outline/underlay/glow) are neutralized to `0`, and the SDF flag (0x1000) is cleared from `m_AtlasRenderMode` so rendering follows the Raster path.
 - External Material references (`m_FileID != 0`) are also included in the same neutralization path.
 
 ### Preview Export

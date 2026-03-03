@@ -403,7 +403,7 @@ python export_fonts_ko.py "D:\MyGame"
 - 원본 게임 머티리얼 스타일을 유지하려면 `--use-game-material`을 사용하세요.
 - JSON 항목별 `force_raster: "True"`로 개별 Raster 강제를 지정할 수 있습니다. (`--parse` 기본값: `"False"`)
 - 전체 SDF 교체 항목을 Raster 방식으로 강제하려면 `--force-raster`를 사용하세요.
-- Raster 방식으로 처리되는 SDF 교체(개별 `force_raster` 또는 `--force-raster`)에서는 SDF 머티리얼 효과값(Outline/Underlay/Glow 등)을 0으로 보정해 박스 아티팩트를 줄입니다.
+- Raster 방식으로 처리되는 SDF 교체(개별 `force_raster` 또는 `--force-raster`)에서는 SDF 머티리얼 효과값(Outline/Underlay/Glow 등)을 0으로 보정하고 `m_AtlasRenderMode`의 SDF 플래그(0x1000)를 해제해 Raster 경로로 처리합니다.
 - Material 참조가 외부 assets 파일(`m_FileID != 0`)이어도 동일하게 보정 대상에 포함됩니다.
 
 ### Preview Export

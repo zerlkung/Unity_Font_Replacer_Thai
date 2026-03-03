@@ -16,10 +16,12 @@ import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import traceback as tb_module
+import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
@@ -3112,37 +3114,6 @@ def detect_texture_object_ps5_swizzle_detail(
         return None, None
 
 
-def warn_unitypy_version(
-    expected_major_minor: tuple[int, int] = (1, 24),
-    lang: Language = "ko",
-) -> None:
-    """KR: UnityPy 버전을 점검하고 권장 버전과 다르면 경고합니다.
-    EN: Check UnityPy version and print warning when it differs from recommendation.
-    """
-    version = getattr(UnityPy, "__version__", "")
-    try:
-        parts = version.split(".")
-        major = int(parts[0])
-        minor = int(parts[1])
-    except (ValueError, IndexError, AttributeError):
-        if lang == "ko":
-            _log_console(f"[경고] UnityPy 버전을 확인할 수 없습니다: '{version}'")
-        else:
-            _log_console(f"[Warning] Could not determine UnityPy version: '{version}'")
-        return
-
-    if (major, minor) != expected_major_minor:
-        expected = f"{expected_major_minor[0]}.{expected_major_minor[1]}.x"
-        if lang == "ko":
-            _log_console(
-                f"[경고] 현재 UnityPy {version} 사용 중입니다. 권장 검증 버전은 {expected}입니다."
-            )
-        else:
-            _log_console(
-                f"[Warning] Using UnityPy {version}. Recommended validated version is {expected}."
-            )
-
-
 def build_replacement_lookup(
     replacements: dict[str, JsonDict],
 ) -> tuple[dict[tuple[str, str, str, int], str], set[str]]:
@@ -3555,6 +3526,275 @@ def _best_atlas_ref(
     return None
 
 
+def _apply_color_override(current_value: Any, override: JsonDict) -> Any:
+    for attr, key in (("r", "r"), ("g", "g"), ("b", "b"), ("a", "a")):
+        if key not in override:
+            continue
+        try:
+            val = float(override[key])
+        except Exception:
+            continue
+        if isinstance(current_value, dict):
+            current_value[key] = val
+        if hasattr(current_value, attr):
+            try:
+                setattr(current_value, attr, val)
+            except Exception:
+                pass
+    return current_value
+
+
+def _texture_ref_to_dict(texture_ref: Any) -> JsonDict:
+    if isinstance(texture_ref, dict):
+        file_id = int(texture_ref.get("m_FileID", 0) or 0)
+        path_id = int(texture_ref.get("m_PathID", 0) or 0)
+        return {"m_FileID": file_id, "m_PathID": path_id}
+    file_id = int(getattr(texture_ref, "m_FileID", 0) or 0)
+    path_id = int(getattr(texture_ref, "m_PathID", 0) or 0)
+    return {"m_FileID": file_id, "m_PathID": path_id}
+
+
+def _extract_texture_ref_from_tex_env(env_value: Any) -> JsonDict:
+    if isinstance(env_value, dict):
+        return _texture_ref_to_dict(env_value.get("m_Texture"))
+    tex = getattr(env_value, "m_Texture", None)
+    return _texture_ref_to_dict(tex)
+
+
+def _color_value_to_dict(value: Any, default: JsonDict) -> JsonDict:
+    if isinstance(value, dict):
+        return {
+            "r": float(value.get("r", default["r"])),
+            "g": float(value.get("g", default["g"])),
+            "b": float(value.get("b", default["b"])),
+            "a": float(value.get("a", default["a"])),
+        }
+    out = dict(default)
+    for key in ("r", "g", "b", "a"):
+        attr = getattr(value, key, None)
+        if attr is not None:
+            try:
+                out[key] = float(attr)
+            except Exception:
+                pass
+    return out
+
+
+def _build_tex_env_entry(texture_ref: JsonDict) -> JsonDict:
+    return {
+        "m_Texture": {
+            "m_FileID": int(texture_ref.get("m_FileID", 0) or 0),
+            "m_PathID": int(texture_ref.get("m_PathID", 0) or 0),
+        },
+        "m_Scale": {"x": 1.0, "y": 1.0},
+        "m_Offset": {"x": 0.0, "y": 0.0},
+    }
+
+
+def _prune_material_saved_properties_for_raster(
+    parse_dict: Any,
+    color_overrides: dict[str, JsonDict],
+) -> bool:
+    saved_props = getattr(parse_dict, "m_SavedProperties", None)
+    if saved_props is None:
+        return False
+
+    tex_envs = getattr(saved_props, "m_TexEnvs", None)
+    main_tex_ref: JsonDict = {"m_FileID": 0, "m_PathID": 0}
+    face_tex_ref: JsonDict = {"m_FileID": 0, "m_PathID": 0}
+    if isinstance(tex_envs, list):
+        for entry in tex_envs:
+            if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+                continue
+            prop_name = str(entry[0])
+            env_value = entry[1]
+            if prop_name == "_MainTex":
+                main_tex_ref = _extract_texture_ref_from_tex_env(env_value)
+            elif prop_name == "_FaceTex":
+                face_tex_ref = _extract_texture_ref_from_tex_env(env_value)
+
+    new_tex_envs: list[tuple[str, JsonDict]] = [
+        ("_FaceTex", _build_tex_env_entry(face_tex_ref)),
+        ("_MainTex", _build_tex_env_entry(main_tex_ref)),
+    ]
+    new_floats: list[tuple[str, float]] = [
+        ("_ColorMask", 15.0),
+        ("_CullMode", 0.0),
+        ("_MaskSoftnessX", 0.0),
+        ("_MaskSoftnessY", 0.0),
+        ("_Stencil", 0.0),
+        ("_StencilComp", 8.0),
+        ("_StencilOp", 0.0),
+        ("_StencilReadMask", 255.0),
+        ("_StencilWriteMask", 255.0),
+        ("_VertexOffsetX", 0.0),
+        ("_VertexOffsetY", 0.0),
+    ]
+
+    color_map: dict[str, Any] = {}
+    old_colors = getattr(saved_props, "m_Colors", None)
+    if isinstance(old_colors, list):
+        for entry in old_colors:
+            if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+                continue
+            color_map[str(entry[0])] = entry[1]
+
+    clip_rect = _color_value_to_dict(
+        color_map.get("_ClipRect"),
+        {"r": -32767.0, "g": -32767.0, "b": 32767.0, "a": 32767.0},
+    )
+    face_color_value = _color_value_to_dict(
+        color_map.get("_FaceColor"),
+        {"r": 1.0, "g": 1.0, "b": 1.0, "a": 1.0},
+    )
+    face_override = color_overrides.get("_FaceColor")
+    if isinstance(face_override, dict):
+        face_color_value = _apply_color_override(face_color_value, face_override)
+
+    new_colors: list[tuple[str, JsonDict]] = [
+        ("_ClipRect", clip_rect),
+        ("_FaceColor", face_color_value),
+    ]
+
+    saved_props.m_TexEnvs = new_tex_envs
+    if hasattr(saved_props, "m_Ints"):
+        try:
+            saved_props.m_Ints = []
+        except Exception:
+            pass
+    saved_props.m_Floats = new_floats
+    saved_props.m_Colors = new_colors
+    return True
+
+
+def _apply_material_replacement_to_object(parse_dict: Any, mat_info: JsonDict) -> bool:
+    changed = False
+    float_overrides_raw = mat_info.get("float_overrides", {})
+    float_overrides = (
+        float_overrides_raw if isinstance(float_overrides_raw, dict) else {}
+    )
+    color_overrides_raw = mat_info.get("color_overrides", {})
+    color_overrides = (
+        color_overrides_raw if isinstance(color_overrides_raw, dict) else {}
+    )
+    prune_raster_material = bool(mat_info.get("prune_raster_material", False))
+    preserve_gradient_floor = bool(mat_info.get("preserve_gradient_floor", False))
+    gradient_scale = mat_info.get("gs")
+    texture_h_raw = mat_info.get("h")
+    texture_w_raw = mat_info.get("w")
+    try:
+        texture_h = float(texture_h_raw) if texture_h_raw is not None else None
+    except Exception:
+        texture_h = None
+    try:
+        texture_w = float(texture_w_raw) if texture_w_raw is not None else None
+    except Exception:
+        texture_w = None
+
+    saved_props = getattr(parse_dict, "m_SavedProperties", None)
+    if saved_props is None:
+        return False
+
+    if prune_raster_material:
+        if _prune_material_saved_properties_for_raster(parse_dict, color_overrides):
+            changed = True
+    else:
+        float_props = getattr(saved_props, "m_Floats", None)
+        if isinstance(float_props, list):
+            has_texture_height = False
+            has_texture_width = False
+            has_gradient_scale = False
+            for i in range(len(float_props)):
+                entry = float_props[i]
+                if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+                    continue
+                prop_name = str(entry[0])
+                if prop_name == "_GradientScale":
+                    candidate: float | None = None
+                    if prop_name in float_overrides:
+                        try:
+                            candidate = float(float_overrides[prop_name])
+                        except Exception:
+                            candidate = None
+                    elif gradient_scale is not None:
+                        try:
+                            candidate = float(gradient_scale)
+                        except Exception:
+                            candidate = None
+                    if candidate is not None:
+                        if preserve_gradient_floor:
+                            try:
+                                existing = float(entry[1])
+                                if candidate < existing:
+                                    candidate = existing
+                            except Exception:
+                                pass
+                        float_props[i] = ("_GradientScale", candidate)
+                        has_gradient_scale = True
+                        changed = True
+                elif prop_name in float_overrides:
+                    float_props[i] = (prop_name, float(float_overrides[prop_name]))
+                    changed = True
+                elif prop_name == "_TextureHeight" and texture_h is not None:
+                    float_props[i] = ("_TextureHeight", texture_h)
+                    has_texture_height = True
+                    changed = True
+                elif prop_name == "_TextureWidth" and texture_w is not None:
+                    float_props[i] = ("_TextureWidth", texture_w)
+                    has_texture_width = True
+                    changed = True
+                if prop_name == "_TextureHeight":
+                    has_texture_height = True
+                elif prop_name == "_TextureWidth":
+                    has_texture_width = True
+                elif prop_name == "_GradientScale":
+                    has_gradient_scale = True
+            if texture_h is not None and not has_texture_height:
+                float_props.append(("_TextureHeight", texture_h))
+                changed = True
+            if texture_w is not None and not has_texture_width:
+                float_props.append(("_TextureWidth", texture_w))
+                changed = True
+            if gradient_scale is not None and not has_gradient_scale:
+                float_props.append(("_GradientScale", float(gradient_scale)))
+                changed = True
+
+        color_props = getattr(saved_props, "m_Colors", None)
+        if isinstance(color_props, list) and color_overrides:
+            for i in range(len(color_props)):
+                color_name = color_props[i][0]
+                override = color_overrides.get(color_name)
+                if not isinstance(override, dict):
+                    continue
+                current_value = color_props[i][1]
+                color_props[i] = (
+                    color_name,
+                    _apply_color_override(current_value, override),
+                )
+                changed = True
+
+    if bool(mat_info.get("reset_keywords", False)):
+        if hasattr(parse_dict, "m_ShaderKeywords"):
+            try:
+                parse_dict.m_ShaderKeywords = ""
+                changed = True
+            except Exception:
+                pass
+        if hasattr(parse_dict, "m_ValidKeywords"):
+            try:
+                parse_dict.m_ValidKeywords = []
+                changed = True
+            except Exception:
+                pass
+        if hasattr(parse_dict, "m_InvalidKeywords"):
+            try:
+                parse_dict.m_InvalidKeywords = []
+                changed = True
+            except Exception:
+                pass
+    return changed
+
+
 def detect_tmp_version(
     data: JsonDict, unity_version: str | None = None
 ) -> Literal["new", "old"]:
@@ -3833,8 +4073,6 @@ def normalize_sdf_data(data: JsonDict, deep_copy: bool = True) -> JsonDict:
     EN: Normalize SDF replacement data into the new TMP schema.
     EN: With deep_copy=True, clone input data to avoid mutating the original.
     """
-    import copy
-
     result: JsonDict = copy.deepcopy(data) if deep_copy else data
     version = detect_tmp_version(result)
 
@@ -5570,6 +5808,10 @@ def replace_fonts_in_file(
                         gradient_scale = None
                         apply_replacement_material = not use_game_mat
                         float_overrides: dict[str, float] = {}
+                        color_overrides: dict[str, JsonDict] = {}
+                        reset_keywords = False
+                        prune_raster_material = False
+                        preserve_gradient_floor = False
                         material_padding_ratio = 1.0
                         material_data = assets.get("sdf_materials")
                         if effective_force_raster and use_game_mat:
@@ -5619,24 +5861,25 @@ def replace_fonts_in_file(
                                         )
                             gradient_scale = float_overrides.get("_GradientScale")
                         if apply_replacement_material and effective_force_raster:
-                            # KR: Raster atlas를 SDF 머티리얼로 렌더링할 때 박스 아티팩트를 줄이기 위해
-                            # KR: dilate/outline/underlay/glow 계열을 0으로 리셋합니다.
-                            # EN: Reduce box artifacts when raster atlases are sampled by SDF materials by
-                            # EN: resetting dilate/outline/underlay/glow-like params to 0.
-                            float_overrides["_GradientScale"] = 1.0
-                            for key in material_padding_scale_keys:
-                                if key == "_GradientScale":
-                                    continue
-                                float_overrides[key] = 0.0
+                            # KR: Raster 모드에서는 SDF 계열 필드 0 덮기 대신 최소 필드만 남깁니다.
+                            # EN: In raster mode, prune to minimal fields instead of zero-overriding SDF properties.
+                            reset_keywords = True
+                            prune_raster_material = True
                             gradient_scale = 1.0
                             if lang == "ko":
                                 _log_console(
-                                    "  Raster 모드 감지: Material SDF 효과값을 0으로 보정합니다."
+                                    "  Raster 모드 감지: Material 필드를 최소 구성으로 재구성합니다."
                                 )
                             else:
                                 _log_console(
-                                    "  Raster mode detected: neutralizing SDF material effect floats."
+                                    "  Raster mode detected: rebuilding Material to minimal raster-safe fields."
                                 )
+                        if (
+                            apply_replacement_material
+                            and replacement_is_sdf
+                            and (not effective_force_raster)
+                        ):
+                            preserve_gradient_floor = True
                         if (
                             material_scale_by_padding
                             and apply_replacement_material
@@ -5661,6 +5904,12 @@ def replace_fonts_in_file(
                             "h": atlas_metadata_height,
                             "gs": gradient_scale,
                             "float_overrides": float_overrides,
+                            "color_overrides": color_overrides,
+                            "reset_keywords": reset_keywords,
+                            "prune_raster_material": bool(prune_raster_material),
+                            "preserve_gradient_floor": bool(
+                                preserve_gradient_floor
+                            ),
                         }
                         if material_target_assets_name:
                             material_key_exact = (
@@ -5793,31 +6042,8 @@ def replace_fonts_in_file(
                         )
             if mat_info is not None:
                 parse_dict = obj.parse_as_object()
-
-                float_overrides = mat_info.get("float_overrides", {})
-                for i in range(len(parse_dict.m_SavedProperties.m_Floats)):
-                    prop_name = parse_dict.m_SavedProperties.m_Floats[i][0]
-                    if prop_name in float_overrides:
-                        parse_dict.m_SavedProperties.m_Floats[i] = (
-                            prop_name,
-                            float(float_overrides[prop_name]),
-                        )
-                    elif prop_name == "_TextureHeight":
-                        parse_dict.m_SavedProperties.m_Floats[i] = (
-                            "_TextureHeight",
-                            float(mat_info["h"]),
-                        )
-                    elif prop_name == "_TextureWidth":
-                        parse_dict.m_SavedProperties.m_Floats[i] = (
-                            "_TextureWidth",
-                            float(mat_info["w"]),
-                        )
-                    elif prop_name == "_GradientScale" and mat_info["gs"] is not None:
-                        parse_dict.m_SavedProperties.m_Floats[i] = (
-                            "_GradientScale",
-                            float(mat_info["gs"]),
-                        )
-                parse_dict.save()
+                if _apply_material_replacement_to_object(parse_dict, mat_info):
+                    parse_dict.save()
 
     if modified:
         if lang == "ko":
@@ -6552,6 +6778,9 @@ Examples:
         console_level=logging.INFO,
         verbose_log_path=verbose_path,
     )
+    py_bits = struct.calcsize("P") * 8
+    _log_console(f"Python {sys.version} ({py_bits}-bit)")
+
     if verbose_path:
         if is_ko:
             _log_info(f"[verbose] 상세 로그를 '{verbose_path}'에 저장합니다.")
@@ -6765,13 +6994,6 @@ Examples:
 
     if args._validate_bundle:
         raise SystemExit(run_validation_worker(args._validate_bundle, lang=lang))
-
-    import struct
-
-    py_bits = struct.calcsize("P") * 8
-    _log_console(f"Python {sys.version} ({py_bits}-bit)")
-
-    warn_unitypy_version(lang=lang)
 
     input_path = strip_wrapping_quotes_repeated(args.gamepath) if args.gamepath else ""
     _log_debug(f"[runtime] requested_gamepath={input_path!r}")
