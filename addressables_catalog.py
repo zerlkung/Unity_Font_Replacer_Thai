@@ -846,6 +846,37 @@ def list_all_resources(catalog: ContentCatalogData) -> list[ResourceLocation]:
     return results
 
 
+def get_bundle_for_location(loc: ResourceLocation) -> Optional[str]:
+    """Return the bundle filename for a ResourceLocation.
+
+    Checks, in order:
+      1. loc.data itself if it is an AssetBundleRequestOptions
+      2. loc.dependencies — the first dep whose internal_id ends with .bundle
+         or whose data contains an AssetBundleRequestOptions
+    Returns the bundle filename (e.g. '000f318...cb8c.bundle'), or None.
+    """
+    # Case 1: the location itself carries ABRO (e.g. it IS a bundle entry)
+    abro = _get_abro(loc.data)
+    if abro is not None:
+        return abro.bundle_name or _basename(loc.internal_id) or None
+
+    # Case 2: look through dependencies
+    for dep in loc.dependencies or []:
+        dep_abro = _get_abro(dep.data)
+        if dep_abro is not None:
+            return dep_abro.bundle_name or _basename(dep.internal_id) or None
+        # fallback: dependency internal_id looks like a bundle file
+        if dep.internal_id and dep.internal_id.endswith(".bundle"):
+            return _basename(dep.internal_id)
+
+    return None
+
+
+def _basename(path: str) -> str:
+    """Return the last component of a path string."""
+    return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] if path else ""
+
+
 def write_catalog_json(catalog: ContentCatalogData, path: str) -> None:
     """Write the catalog back as a catalog.json file.
     Only works on catalogs originally read from JSON format."""
@@ -1037,35 +1068,82 @@ def _read_str4(br: io.RawIOBase, encoding: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# CLI  (python addressables_catalog.py <catalog_file> [search_pattern])
+# CLI
 # ---------------------------------------------------------------------------
+# Usage:
+#   python addressables_catalog.py <catalog>
+#   python addressables_catalog.py <catalog> --fonts   [--output out.txt]
+#   python addressables_catalog.py <catalog> <pattern> [--output out.txt]
+#   python addressables_catalog.py <catalog> --patch-crc <output_catalog>
+# ---------------------------------------------------------------------------
+
+def _format_location_line(loc: ResourceLocation) -> str:
+    """Format a single ResourceLocation as a human-readable line."""
+    bundle = get_bundle_for_location(loc)
+    bundle_str = f"  →  {bundle}" if bundle else ""
+    return f"[{loc.primary_key}]  {loc.internal_id}{bundle_str}"
+
+
+def _write_results(results: list[ResourceLocation], out_path: Optional[str],
+                   header: str) -> None:
+    """Print results to stdout and optionally save to a file."""
+    lines = [header, "=" * len(header)]
+    for loc in results:
+        lines.append(_format_location_line(loc))
+
+    output = "\n".join(lines)
+    print(output)
+
+    if out_path:
+        Path(out_path).write_text(output + "\n", encoding="utf-8")
+        print(f"\nSaved {len(results)} result(s) → {out_path}")
+    else:
+        print(f"\nTotal: {len(results)} result(s)  (use --output <file> to save)")
+
 
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) < 2:
-        print("Usage: python addressables_catalog.py <catalog> [search_pattern]")
-        print("       python addressables_catalog.py <catalog> --patch-crc <output>")
+    args = sys.argv[1:]
+
+    if not args:
+        print("Usage:")
+        print("  python addressables_catalog.py <catalog>")
+        print("  python addressables_catalog.py <catalog> --fonts   [--output out.txt]")
+        print("  python addressables_catalog.py <catalog> <pattern> [--output out.txt]")
+        print("  python addressables_catalog.py <catalog> --patch-crc <output_catalog>")
         sys.exit(1)
 
-    catalog_path = sys.argv[1]
+    catalog_path = args[0]
+    remaining    = args[1:]
+
+    # parse --output
+    out_path = None
+    if "--output" in remaining:
+        idx = remaining.index("--output")
+        if idx + 1 < len(remaining):
+            out_path = remaining[idx + 1]
+            remaining = [a for i, a in enumerate(remaining) if i not in (idx, idx + 1)]
+
     print(f"Reading: {catalog_path}")
     cat = read_catalog(catalog_path)
     print_catalog_summary(cat)
+    print()
 
-    if len(sys.argv) >= 3:
-        if sys.argv[2] == "--patch-crc":
-            n = patch_crc(cat)
-            out_path = sys.argv[3] if len(sys.argv) > 3 else catalog_path + ".patched.json"
-            write_catalog_json(cat, out_path)
-            print(f"\nPatched {n} CRC(s) → {out_path}")
-        else:
-            pattern = sys.argv[2]
-            results = find_resources(cat, pattern)
-            print(f"\nSearch '{pattern}': {len(results)} result(s)")
-            for loc in results[:50]:
-                abro = _get_abro(loc.data)
-                crc_info = f"  CRC={abro.crc}  bundle={abro.bundle_name}" if abro else ""
-                print(f"  [{loc.primary_key}] {loc.internal_id}{crc_info}")
-            if len(results) > 50:
-                print(f"  ... and {len(results) - 50} more")
+    if not remaining:
+        pass  # summary only
+
+    elif remaining[0] == "--patch-crc":
+        patch_out = remaining[1] if len(remaining) > 1 else catalog_path + ".patched.json"
+        n = patch_crc(cat)
+        write_catalog_json(cat, patch_out)
+        print(f"Patched {n} CRC(s)  →  {patch_out}")
+
+    elif remaining[0] == "--fonts":
+        results = find_font_resources(cat)
+        _write_results(results, out_path, f"Font resources ({len(results)})")
+
+    else:
+        pattern = remaining[0]
+        results = find_resources(cat, pattern)
+        _write_results(results, out_path, f"Search '{pattern}' ({len(results)} result(s))")
