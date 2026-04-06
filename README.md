@@ -1,3 +1,5 @@
+[> ภาษาไทย / Thai version](README_TH.md)
+
 # Unity Font Replacer — Thai Edition
 
 A fork of [snowyegret23/Unity_Font_Replacer](https://github.com/snowyegret23/Unity_Font_Replacer) adapted for **Thai language font replacement** in Unity games.
