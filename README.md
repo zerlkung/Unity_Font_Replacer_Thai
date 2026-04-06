@@ -183,6 +183,77 @@ Select a task:
 
 ---
 
+## I2Localization Parser
+
+`i2_localization.py` — อ่านและแก้ไขไฟล์ localization จาก [I2Localization](https://inter-illusion.com/assets/I2-Localization) โดยตรงจาก UABEA RAW export (`.dat`)
+
+> **หมายเหตุ**: ใช้ได้กับเกมที่ build แบบ IL2CPP (stripped type tree) ซึ่ง UABEA export JSON ได้แค่ header — parser นี้อ่าน binary ได้โดยตรง
+
+### โครงสร้างข้อมูล / Data Layout
+
+Binary format ที่ถอดรหัสได้:
+- `TermData` = `Term(str)` + `TermType(int)` + `Languages[21](str[])` + `DescBlob(str)` + `Trailing(int)`
+- `Languages[21]` ประกอบด้วย 3 metadata columns + 18 ภาษา (EN/JA/RU/FR/DE/ES/PT/ZH-CN/ZH-TW/KO/IT/NL/TR/FR-CA/AR ฯลฯ)
+
+### คำสั่ง / CLI
+
+| คำสั่ง | รายละเอียด / Description |
+|--------|--------------------------|
+| `--stats` | แสดงสถิติจำนวน term และ translation ต่อภาษา |
+| `--export-json <out>` | Export ทุก term พร้อม key และ translation ทุกภาษา เป็น JSON |
+| `--export-csv <out>` | Export เป็น CSV (เปิดใน Excel ได้) |
+| `--import-json <in> --output <out>` | นำ JSON ที่แก้ไขแล้ว import กลับเป็น .dat |
+| `--find <query>` | ค้นหา term จาก key หรือ translation |
+| `--lang <code>` | กรองผลลัพธ์ --find ตาม language code เช่น `en`, `ko` |
+| `--include-special` | รวม REFS/ และ FONTS/ metadata terms ใน export |
+| `--include-comments` | รวม `__comments__` และ `__max_chars__` ใน JSON |
+
+```bash
+# Export ทุก term เป็น JSON
+python i2_localization.py I2Languages.dat --export-json terms.json
+
+# ดูสถิติ
+python i2_localization.py I2Languages.dat --stats
+
+# ค้นหาคำ
+python i2_localization.py I2Languages.dat --find "Crusade" --lang en
+
+# แปลใหม่แล้ว import กลับ
+python i2_localization.py I2Languages.dat --import-json my_thai.json --output patched.dat
+```
+
+### รูปแบบ JSON / JSON Format
+
+```json
+{
+  "languages": [{"code": "en", "name": "English"}, ...],
+  "terms": {
+    "UI/AbilityPoints": {
+      "en": "Divine Inspiration",
+      "ja": "神聖なる啓示",
+      "ko": "종교적 영감"
+    }
+  }
+}
+```
+
+### Python API
+
+```python
+from i2_localization import parse_dat, export_json, import_json
+
+terms, languages = parse_dat("I2Languages.dat")
+export_json(terms, languages, "out.json")
+
+# Search
+from i2_localization import find_terms
+results = find_terms(terms, languages, "ability")
+for t in results:
+    print(t.key, "→", t.english)
+```
+
+---
+
 ## Addressables Catalog
 
 `addressables_catalog.py` — Python port ของ [nesrak1/AddressablesTools](https://github.com/nesrak1/AddressablesTools)
