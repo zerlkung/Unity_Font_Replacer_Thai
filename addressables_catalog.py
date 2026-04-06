@@ -1095,6 +1095,7 @@ def _write_results(results: list[ResourceLocation], out_path: Optional[str],
     print(output)
 
     if out_path:
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text(output + "\n", encoding="utf-8")
         print(f"\nSaved {len(results)} result(s) → {out_path}")
     else:
