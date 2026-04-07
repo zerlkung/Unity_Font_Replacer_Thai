@@ -185,9 +185,11 @@ Select a task:
 
 ## I2Localization Parser
 
-`i2_localization.py` — อ่านและแก้ไขไฟล์ localization จาก [I2Localization](https://inter-illusion.com/assets/I2-Localization) โดยตรงจาก UABEA RAW export (`.dat`)
+`i2_localization.py` — อ่านและแก้ไขไฟล์ localization จาก [I2Localization](https://inter-illusion.com/assets/I2-Localization)
+รองรับทั้ง UABEA RAW export (`.dat`) และไฟล์ Unity assets (`.assets`) โดยตรง โดยไม่ต้องผ่าน UABEA
 
 > **หมายเหตุ**: ใช้ได้กับเกมที่ build แบบ IL2CPP (stripped type tree) ซึ่ง UABEA export JSON ได้แค่ header — parser นี้อ่าน binary ได้โดยตรง
+> รองรับหลาย platform: PC, PS4, Switch ฯลฯ — ไม่ต้องการ `GameAssembly.dll`, `global-metadata.dat` หรือ `UnityPy`
 
 ### โครงสร้างข้อมูล / Data Layout
 
@@ -207,10 +209,17 @@ Binary format ที่ถอดรหัสได้:
 | `--lang <code>` | กรองผลลัพธ์ --find ตาม language code เช่น `en`, `ko` |
 | `--include-special` | รวม REFS/ และ FONTS/ metadata terms ใน export |
 | `--include-comments` | รวม `__comments__` และ `__max_chars__` ใน JSON |
+| `--path-id <id>` | (`.assets` เท่านั้น) ระบุ pathID ของ MonoBehaviour โดยตรง |
 
 ```bash
-# Export ทุก term เป็น JSON
+# Export จาก UABEA RAW export (.dat)
 python i2_localization.py I2Languages.dat --export-json terms.json
+
+# Export โดยตรงจาก Unity assets file (ไม่ต้องผ่าน UABEA)
+python i2_localization.py resources.assets --export-json terms.json
+
+# ระบุ pathID โดยตรง (ถ้ารู้)
+python i2_localization.py resources.assets --path-id 27659 --export-json terms.json
 
 # ดูสถิติ
 python i2_localization.py I2Languages.dat --stats
@@ -240,13 +249,18 @@ python i2_localization.py I2Languages.dat --import-json my_thai.json --output pa
 ### Python API
 
 ```python
-from i2_localization import parse_dat, export_json, import_json
+from i2_localization import parse_dat, export_json, import_json, find_terms
 
+# From UABEA RAW export
 terms, languages = parse_dat("I2Languages.dat")
+
+# Or directly from Unity assets file (requires UnityPy)
+terms, languages = parse_dat("resources.assets")
+terms, languages = parse_dat("resources.assets", path_id=27659)  # specific pathID
+
 export_json(terms, languages, "out.json")
 
 # Search
-from i2_localization import find_terms
 results = find_terms(terms, languages, "ability")
 for t in results:
     print(t.key, "→", t.english)

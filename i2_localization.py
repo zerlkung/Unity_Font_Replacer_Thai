@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-I2Localization binary parser for UABEA RAW exports (.dat).
+I2Localization binary parser — supports UABEA RAW exports (.dat) and Unity .assets files directly.
+No external dependencies required: reads Unity SerializedFile format in pure Python.
+Works with PC, PS4, Switch and any platform that uses standard Unity assets files.
 
 Parses binary TermData structure discovered by reverse-engineering:
   TermData = Term(str) + TermType(int) + Languages(str[21]) + DescBlob(str) + Trailing(int)
@@ -15,15 +17,17 @@ Parses binary TermData structure discovered by reverse-engineering:
     [20] = Language 17 (e.g. VO)
 
 Usage (CLI):
-  python i2_localization.py <file.dat> --export-json <out.json>
-  python i2_localization.py <file.dat> --export-csv  <out.csv>
-  python i2_localization.py <file.dat> --import-json <in.json> --output <patched.dat>
-  python i2_localization.py <file.dat> --stats
-  python i2_localization.py <file.dat> --find "search term"
+  python i2_localization.py <file.dat|resources.assets> --export-json <out.json>
+  python i2_localization.py <file.dat|resources.assets> --export-csv  <out.csv>
+  python i2_localization.py <file.dat|resources.assets> --import-json <in.json> --output <patched.dat>
+  python i2_localization.py <file.dat|resources.assets> --stats
+  python i2_localization.py <file.dat|resources.assets> --find "search term"
+  python i2_localization.py resources.assets --path-id 27659 --export-json out.json
 
 Usage (Python):
   from i2_localization import parse_dat, export_json, import_json, export_csv
-  terms, languages = parse_dat("file.dat")
+  terms, languages = parse_dat("file.dat")           # UABEA RAW export
+  terms, languages = parse_dat("resources.assets")   # Unity assets file (auto-detect)
   export_json(terms, languages, "out.json")
 """
 
@@ -35,7 +39,7 @@ import csv
 import sys
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 # ─── constants ────────────────────────────────────────────────────────────────
 
@@ -207,16 +211,165 @@ def _parse_languages(data: bytes, off: int) -> tuple:
     return languages, off
 
 
+# ─── Unity .assets extraction (pure Python, no IL2CPP tools needed) ───────────
+
+def _read_assets_raw(assets_path: str, path_id: Optional[int] = None) -> bytes:
+    """Pure-Python Unity SerializedFile reader.
+
+    Parses the Unity SerializedFile binary format directly — no UnityPy,
+    no GameAssembly.dll, no global-metadata.dat required.  Works with PC,
+    PS4, Switch and any other platform that uses the standard Unity assets
+    format (versions 9–22, i.e. Unity 2019–2022+).
+
+    Args:
+        assets_path: Path to the .assets file (e.g. resources.assets).
+        path_id:     Optional pathID to extract directly.  When omitted the
+                     function auto-detects the I2Languages MonoBehaviour.
+
+    Returns:
+        Raw bytes of the MonoBehaviour (identical layout to a UABEA RAW .dat).
+
+    Raises:
+        ValueError: if the file is not a valid SerializedFile or I2Languages
+                    cannot be located.
+    """
+    with open(assets_path, 'rb') as f:
+        data = f.read()
+
+    # ── Header (always big-endian) ────────────────────────────────────────────
+    if len(data) < 20:
+        raise ValueError("File too small to be a Unity assets file")
+
+    fmt = struct.unpack_from('>I', data, 8)[0]       # format version
+
+    if fmt >= 22:
+        # v22+: extended 64-bit header fields start at offset 20
+        data_off  = struct.unpack_from('>q', data, 32)[0]
+        big_end   = data[16] != 0
+        pos       = data.index(b'\x00', 48) + 1      # skip unity_version\0
+    elif fmt >= 9:
+        data_off  = struct.unpack_from('>I', data, 12)[0]
+        big_end   = data[13] != 0
+        pos       = data.index(b'\x00', 17) + 1
+    else:
+        raise ValueError(f"Unsupported Unity SerializedFile format version {fmt}")
+
+    E = '>' if big_end else '<'
+
+    # ── Metadata header ───────────────────────────────────────────────────────
+    pos += 4                                          # target_platform (int32)
+    has_tree = data[pos]; pos += 1                    # enable_type_tree (uint8)
+
+    # ── Type table ────────────────────────────────────────────────────────────
+    tc = struct.unpack_from(f'{E}i', data, pos)[0]; pos += 4
+    cids: list = []
+
+    for _ in range(tc):
+        cid = struct.unpack_from(f'{E}i', data, pos)[0]; pos += 4
+        pos += 1                                      # is_stripped (uint8)
+        pos += 2                                      # script_type_index (int16)
+
+        # MonoBehaviour script GUID (present in format version >= 17)
+        if fmt >= 17 and cid == 114:
+            pos += 16                                 # script_id (16 bytes)
+
+        pos += 16                                     # old_type_hash (always)
+
+        if has_tree:
+            nc  = struct.unpack_from(f'{E}i', data, pos)[0]; pos += 4
+            sbs = struct.unpack_from(f'{E}i', data, pos)[0]; pos += 4
+            # TypeTreeNode: 32 bytes for fmt >= 19, 24 bytes for older
+            pos += nc * (32 if fmt >= 19 else 24) + sbs
+
+        cids.append(cid)
+
+    # ── Object table ──────────────────────────────────────────────────────────
+    # Note: object_count is read WITHOUT pre-alignment; the 4-byte alignment
+    # is applied per-entry (before each path_id), not before the count itself.
+    oc = struct.unpack_from(f'{E}i', data, pos)[0]; pos += 4
+
+    MONO = 114   # MonoBehaviour class ID
+    all_objects: list = []
+
+    for _ in range(oc):
+        pos    = (pos + 3) & ~3                       # per-entry alignment
+        oid    = struct.unpack_from(f'{E}q', data, pos)[0]; pos += 8
+        bstart = struct.unpack_from(f'{E}q', data, pos)[0] if fmt >= 22 \
+                 else struct.unpack_from(f'{E}I', data, pos)[0]
+        pos   += 8 if fmt >= 22 else 4
+        bsize  = struct.unpack_from(f'{E}I', data, pos)[0]; pos += 4
+        tidx   = struct.unpack_from(f'{E}i', data, pos)[0]; pos += 4
+        cid    = cids[tidx] if 0 <= tidx < len(cids) else -1
+        all_objects.append((oid, data_off + bstart, bsize, cid))
+
+    # ── Extract target bytes ───────────────────────────────────────────────────
+    if path_id is not None:
+        for oid, off, sz, _ in all_objects:
+            if oid == path_id:
+                return data[off:off + sz]
+        raise ValueError(f"pathID {path_id} not found in {assets_path}")
+
+    # Auto-detect: try MonoBehaviours first (class_id 114), then all large objects
+    candidates = sorted(
+        [(oid, off, sz) for oid, off, sz, cid in all_objects
+         if cid == MONO and sz >= 10_000],
+        key=lambda x: x[2], reverse=True,
+    )
+    if not candidates:
+        candidates = sorted(
+            [(oid, off, sz) for oid, off, sz, _ in all_objects if sz >= 10_000],
+            key=lambda x: x[2], reverse=True,
+        )
+
+    for oid, off, sz in candidates:
+        raw = data[off:off + sz]
+        if len(raw) < 64:
+            continue
+        tc2 = struct.unpack_from('<i', raw, _TERMS_COUNT_OFF)[0]
+        if not (100 < tc2 < 200_000):
+            continue
+        try:
+            result, _ = _parse_term(raw, _TERMS_DATA_OFF)
+            if result is not None and result.key:
+                print(
+                    f"  Found I2Languages  pathID={oid}  size={sz:,}  terms={tc2}",
+                    file=sys.stderr,
+                )
+                return raw
+        except Exception:
+            continue
+
+    raise ValueError(
+        f"No I2Languages MonoBehaviour found in {assets_path}.\n"
+        "Try specifying --path-id <id> if you know the exact pathID."
+    )
+
+
 # ─── public API ───────────────────────────────────────────────────────────────
 
-def parse_dat(path: str) -> tuple:
-    """Parse an I2Languages UABEA RAW .dat file.
+def parse_dat(path: Union[str, Path], path_id: Optional[int] = None) -> tuple:
+    """Parse I2Languages from a UABEA RAW .dat file or a Unity .assets file.
+
+    Automatically detects the file type from the extension:
+      - ``.dat``    → read directly as UABEA RAW binary export
+      - ``.assets`` → extract I2Languages MonoBehaviour via UnityPy first
+
+    Args:
+        path:    Path to a .dat or .assets file.
+        path_id: (assets only) Force extraction of a specific pathID.
 
     Returns:
         (terms: list[I2Term], languages: list[I2Language])
     """
-    with open(path, 'rb') as f:
-        data = f.read()
+    path = str(path)
+    ext = Path(path).suffix.lower()
+
+    if ext == '.assets':
+        print(f"Extracting I2Languages from Unity assets file …", file=sys.stderr)
+        data = _read_assets_raw(path, path_id=path_id)
+    else:
+        with open(path, 'rb') as f:
+            data = f.read()
 
     term_count = struct.unpack_from('<i', data, _TERMS_COUNT_OFF)[0]
     off = _TERMS_DATA_OFF
@@ -465,9 +618,15 @@ def _cli():
     import argparse
 
     p = argparse.ArgumentParser(
-        description="I2Localization binary parser for UABEA RAW .dat exports"
+        description=(
+            "I2Localization parser — reads UABEA RAW .dat exports "
+            "or Unity .assets files directly (pure Python, no external tools needed)"
+        )
     )
-    p.add_argument("dat_file", help="Input .dat file (UABEA RAW export)")
+    p.add_argument(
+        "dat_file",
+        help="Input file: UABEA RAW export (.dat) or Unity assets file (.assets)",
+    )
     p.add_argument("--export-json",  metavar="OUT",  help="Export all terms to JSON")
     p.add_argument("--export-csv",   metavar="OUT",  help="Export all terms to CSV")
     p.add_argument("--import-json",  metavar="IN",   help="JSON file with translations to patch in")
@@ -480,11 +639,13 @@ def _cli():
                    help="Include __comments__ and __max_chars__ in JSON export")
     p.add_argument("--lang",         metavar="CODE",
                    help="Filter --find results to a specific language code")
+    p.add_argument("--path-id",      metavar="ID",   type=int,
+                   help="(assets only) Force extraction of a specific MonoBehaviour pathID")
 
     args = p.parse_args()
 
     print(f"Parsing {args.dat_file} …", file=sys.stderr)
-    terms, languages = parse_dat(args.dat_file)
+    terms, languages = parse_dat(args.dat_file, path_id=args.path_id)
     print(f"Parsed {len(terms)} terms, {len(languages)} languages.", file=sys.stderr)
 
     if args.stats:
