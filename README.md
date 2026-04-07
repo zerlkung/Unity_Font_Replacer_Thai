@@ -2,7 +2,7 @@
 
 > เครื่องมือเปลี่ยนฟอนต์ในเกม Unity ให้รองรับภาษาไทย โดยไม่ต้องมี source code ของเกม
 >
-> A tool to replace fonts in compiled Unity games with Thai fonts — no source code required.
+> Replace fonts in compiled Unity games with Thai fonts — no source code required.
 
 Fork จาก / Forked from: [snowyegret23/Unity_Font_Replacer](https://github.com/snowyegret23/Unity_Font_Replacer)
 
@@ -10,28 +10,29 @@ Fork จาก / Forked from: [snowyegret23/Unity_Font_Replacer](https://github.
 
 ## สารบัญ / Table of Contents
 
-- [ความสามารถ / Features](#ความสามารถ--features)
+- [รองรับ Platform](#รองรับ-platform)
 - [ความต้องการของระบบ / Requirements](#ความต้องการของระบบ--requirements)
 - [การติดตั้ง / Installation](#การติดตั้ง--installation)
 - [เตรียมฟอนต์ไทย / Thai Font Setup](#เตรียมฟอนต์ไทย--thai-font-setup)
 - [วิธีใช้งาน / Usage](#วิธีใช้งาน--usage)
 - [ตัวเลือก / Options](#ตัวเลือก--options)
+- [I2Localization Parser](#i2localization-parser)
 - [Addressables Catalog](#addressables-catalog)
 - [เครดิต / Credits](#เครดิต--credits)
-- [สัญญาอนุญาต / License](#สัญญาอนุญาต--license)
 
 ---
 
-## ความสามารถ / Features
+## รองรับ Platform
 
-| ฟีเจอร์ | รายละเอียด |
-|---|---|
-| TTF replacement | เปลี่ยนฟอนต์ TTF ใน asset bundle โดยตรง |
-| TMP SDF replacement | รองรับ TextMeshPro ทั้ง schema เก่า (Unity ≤ 2018.3) และใหม่ (Unity ≥ 2018.4) |
-| Thai bulk modes | `--sarabun` และ `--notosansthai` เปลี่ยนทุกฟอนต์ในครั้งเดียว |
-| SDF atlas generator | สร้าง SDF atlas จากไฟล์ TTF ไทย พร้อม charset ภาษาไทยในตัว |
-| PS5 swizzle | รองรับ texture memory layout ของ PlayStation 5 |
-| Addressables catalog | อ่าน / แก้ไข / Patch CRC ใน `catalog.json`, `catalog.bin`, `catalog.bundle` |
+| Platform | --parse (สแกนฟอนต์) | --sarabun / --notosansthai (เปลี่ยนฟอนต์) | หมายเหตุ |
+|----------|---------------------|---------------------------------------------|----------|
+| **PC (Windows, IL2CPP)** | TTF + SDF | TTF + SDF | ต้องการ Il2CppDumper + TypeTreeGeneratorAPI |
+| **PC (Windows, Mono)** | TTF + SDF | TTF + SDF | ใช้ Managed/ folder โดยตรง |
+| **PS4** | TTF เท่านั้น | TTF เท่านั้น | Il2CppDumper ยังไม่รองรับ PS4 binary |
+| **PS5** | TTF + SDF | TTF + SDF | ต้องใช้ `--ps5-swizzle` |
+
+> **PS4 / Console:** ฟอนต์ประเภท SDF (TextMeshPro) ยังไม่สามารถสแกนหรือเปลี่ยนได้
+> เนื่องจาก Il2CppDumper ยังไม่รองรับ PS4 ELF binary format
 
 ---
 
@@ -40,20 +41,71 @@ Fork จาก / Forked from: [snowyegret23/Unity_Font_Replacer](https://github.
 - **Python** 3.12 ขึ้นไป
 - **OS**: Windows (รองรับ Linux/macOS บางส่วน)
 
+### โครงสร้างไฟล์ที่ต้องการตาม Platform
+
+**PC (IL2CPP):**
+```
+<game_root>/
+  GameAssembly.dll               ← IL2CPP binary
+  <GameName>_Data/
+    il2cpp_data/
+      Metadata/
+        global-metadata.dat      ← IL2CPP metadata
+```
+
+**PS4:**
+```
+Image0/
+  eboot.bin                      ← PS4 executable
+  Media_Data/
+    Metadata/
+      global-metadata.dat        ← IL2CPP metadata
+```
+
+**PC (Mono):**
+```
+<game_root>/
+  <GameName>_Data/
+    Managed/                     ← DLL folder (ไม่ต้องตั้งค่าเพิ่ม)
+```
+
 ---
 
 ## การติดตั้ง / Installation
 
-```bash
-pip install UnityPy TypeTreeGeneratorAPI Pillow scipy
-```
-
-Clone โปรเจกต์:
+### 1. Clone โปรเจกต์
 
 ```bash
 git clone https://github.com/zerlkung/Unity_Font_Replacer_Thai.git
 cd Unity_Font_Replacer_Thai
 ```
+
+### 2. ติดตั้ง Python packages
+
+**PC (ต้องการ SDF / TMP support):**
+```bash
+pip install UnityPy TypeTreeGeneratorAPI Pillow scipy
+```
+
+**PS4 / Mono (TTF only หรือ Mono):**
+```bash
+pip install UnityPy Pillow scipy
+```
+
+> `TypeTreeGeneratorAPI` ต้องการสำหรับการ parse SDF/TMP fonts บนเกม IL2CPP (PC)
+> ถ้าไม่ติดตั้งจะยังใช้งานได้ แต่จะสแกนได้เฉพาะ TTF fonts เท่านั้น
+
+### 3. ติดตั้ง Il2CppDumper (PC IL2CPP เท่านั้น)
+
+> ข้ามขั้นตอนนี้ถ้าเกมเป็น Mono หรือ PS4
+
+วาง `Il2CppDumper.exe` ไว้ที่:
+```
+Il2CppDumper/
+  Il2CppDumper.exe
+```
+
+ดาวน์โหลดได้จาก: [Perfare/Il2CppDumper](https://github.com/Perfare/Il2CppDumper/releases)
 
 ---
 
@@ -61,14 +113,12 @@ cd Unity_Font_Replacer_Thai
 
 ### 1. ดาวน์โหลดฟอนต์ไทย
 
-ฟอนต์ที่แนะนำ (ฟรี / Free):
+| ฟอนต์ | ลิงก์ | ใช้กับ |
+|-------|-------|--------|
+| Sarabun | [Google Fonts](https://fonts.google.com/specimen/Sarabun) | TTF + SDF |
+| Noto Sans Thai | [Google Fonts](https://fonts.google.com/noto/specimen/Noto+Sans+Thai) | TTF + SDF |
 
-| ฟอนต์ | ลิงก์ |
-|---|---|
-| Sarabun | [Google Fonts](https://fonts.google.com/specimen/Sarabun) |
-| Noto Sans Thai | [Google Fonts](https://fonts.google.com/noto/specimen/Noto+Sans+Thai) |
-
-### 2. วางไฟล์ใน `TH_ASSETS/`
+### 2. วางไฟล์ TTF ใน `TH_ASSETS/`
 
 ```
 TH_ASSETS/
@@ -76,7 +126,9 @@ TH_ASSETS/
   NotoSansThai.ttf
 ```
 
-### 3. สร้าง SDF atlas (เฉพาะเกมที่ใช้ TextMeshPro)
+### 3. สร้าง SDF atlas (เฉพาะเกม PC ที่ใช้ TextMeshPro)
+
+> ข้ามขั้นตอนนี้ถ้าเป็น PS4 หรือเกมที่ไม่ใช้ TextMeshPro
 
 ```bash
 python make_sdf.py --ttf TH_ASSETS/Sarabun.ttf
@@ -95,39 +147,53 @@ TH_ASSETS/
 
 ## วิธีใช้งาน / Usage
 
-### สแกนฟอนต์ในเกม / Scan fonts
+### ขั้นตอนที่ 1 — สแกนฟอนต์ในเกม
 
 สร้าง JSON map ของฟอนต์ทั้งหมดในเกม:
 
+**PC:**
 ```bash
 python unity_font_replacer_th.py --gamepath "C:/path/to/game" --parse
 ```
 
----
-
-### เปลี่ยนฟอนต์แบบเหมารวม / Bulk replace
-
-**Sarabun:**
+**PS4:**
 ```bash
-python unity_font_replacer_th.py --gamepath "C:/path/to/game" --sarabun
+python unity_font_replacer_th.py --gamepath "C:/path/to/Image0" --parse
 ```
 
-**Noto Sans Thai:**
+ผลลัพธ์จะบันทึกเป็นไฟล์ `<game_name>.json` ในโฟลเดอร์เดียวกับ script
+
+> **PS4:** จะพบเฉพาะ TTF fonts เท่านั้น SDF/TMP fonts ถูก skip โดยอัตโนมัติ
+> ถ้าต้องการ SDF fonts ต้องใช้ PC version ของเกมแทน
+
+---
+
+### ขั้นตอนที่ 2 — เปลี่ยนฟอนต์
+
+#### เปลี่ยนแบบเหมารวม / Bulk replace
+
+เปลี่ยนทุกฟอนต์ในเกมเป็นฟอนต์ไทยในครั้งเดียว:
+
 ```bash
+# Sarabun
+python unity_font_replacer_th.py --gamepath "C:/path/to/game" --sarabun
+
+# Noto Sans Thai
 python unity_font_replacer_th.py --gamepath "C:/path/to/game" --notosansthai
 ```
 
-เปลี่ยนเฉพาะ SDF (TextMeshPro) หรือ TTF:
+เปลี่ยนเฉพาะบางประเภท:
 ```bash
+# เฉพาะ SDF (TextMeshPro) — PC เท่านั้น
 python unity_font_replacer_th.py --gamepath "C:/path/to/game" --sarabun --sdfonly
+
+# เฉพาะ TTF — ใช้ได้ทั้ง PC และ PS4
 python unity_font_replacer_th.py --gamepath "C:/path/to/game" --sarabun --ttfonly
 ```
 
----
+#### เปลี่ยนรายตัวผ่าน JSON / Per-font via JSON
 
-### เปลี่ยนฟอนต์รายตัว / Per-font replace
-
-แก้ไขไฟล์ JSON ที่ได้จาก `--parse` เพื่อกำหนดว่าจะเปลี่ยนฟอนต์ไหนเป็นอะไร:
+แก้ไขไฟล์ JSON ที่ได้จาก `--parse` ระบุว่าฟอนต์ไหนจะเปลี่ยนเป็นอะไร แล้วรัน:
 
 ```bash
 python unity_font_replacer_th.py --gamepath "C:/path/to/game" --list font_map.json
@@ -168,39 +234,64 @@ Select a task:
 
 ## ตัวเลือก / Options
 
-| Flag | ภาษาไทย | English |
-|---|---|---|
-| `--sarabun` | เปลี่ยนทุกฟอนต์เป็น Sarabun | Bulk replace with Sarabun |
-| `--notosansthai` | เปลี่ยนทุกฟอนต์เป็น Noto Sans Thai | Bulk replace with Noto Sans Thai |
-| `--sdfonly` | เปลี่ยนเฉพาะ SDF (TextMeshPro) | SDF fonts only |
-| `--ttfonly` | เปลี่ยนเฉพาะ TTF | TTF fonts only |
-| `--parse` | ส่งออกข้อมูลฟอนต์เป็น JSON | Export font info to JSON |
-| `--list <file>` | เปลี่ยนตาม JSON mapping | Replace via JSON mapping |
-| `--ps5-swizzle` | เปิด PS5 swizzle/unswizzle | Enable PS5 swizzle mode |
-| `--preview-export` | Export preview ก่อนเปลี่ยน | Export preview PNGs |
-| `--scan-jobs <n>` | จำนวน parallel worker | Parallel scan workers |
-| `--output-only <dir>` | บันทึกเฉพาะไฟล์ที่เปลี่ยน | Save only modified files |
+| Flag | รายละเอียด | PC | PS4 |
+|------|------------|:--:|:---:|
+| `--gamepath <path>` | Path ของโฟลเดอร์เกม | ✓ | ✓ |
+| `--parse` | สแกนฟอนต์ → บันทึกเป็น JSON | ✓ | ✓ (TTF only) |
+| `--sarabun` | เปลี่ยนทุกฟอนต์เป็น Sarabun | ✓ | ✓ (TTF only) |
+| `--notosansthai` | เปลี่ยนทุกฟอนต์เป็น Noto Sans Thai | ✓ | ✓ (TTF only) |
+| `--list <file>` | เปลี่ยนตาม JSON mapping | ✓ | ✓ |
+| `--sdfonly` | เปลี่ยนเฉพาะ SDF (TextMeshPro) | ✓ | ✗ |
+| `--ttfonly` | เปลี่ยนเฉพาะ TTF | ✓ | ✓ |
+| `--ps5-swizzle` | เปิด PS5 texture swizzle/unswizzle | ✓ | ✗ |
+| `--preview-export` | Export preview PNG ก่อนเปลี่ยน | ✓ | - |
+| `--scan-jobs <n>` | จำนวน parallel worker (default: 1) | ✓ | ✓ |
+| `--output-only <dir>` | บันทึกเฉพาะไฟล์ที่เปลี่ยน | ✓ | ✓ |
 
 ---
 
 ## I2Localization Parser
 
 `i2_localization.py` — อ่านและแก้ไขไฟล์ localization จาก [I2Localization](https://inter-illusion.com/assets/I2-Localization)
-รองรับทั้ง UABEA RAW export (`.dat`) และไฟล์ Unity assets (`.assets`) โดยตรง โดยไม่ต้องผ่าน UABEA
 
-> **หมายเหตุ**: ใช้ได้กับเกมที่ build แบบ IL2CPP (stripped type tree) ซึ่ง UABEA export JSON ได้แค่ header — parser นี้อ่าน binary ได้โดยตรง
-> รองรับหลาย platform: PC, PS4, Switch ฯลฯ — ไม่ต้องการ `GameAssembly.dll`, `global-metadata.dat` หรือ `UnityPy`
+รองรับทั้ง UABEA RAW export (`.dat`) และไฟล์ Unity assets (`.assets`) โดยตรง
+**ไม่ต้องการ:** UABEA, UnityPy, GameAssembly.dll, global-metadata.dat
+**รองรับทุก platform:** PC, PS4, Switch ฯลฯ ใช้ได้กับเกม IL2CPP ที่มี stripped type tree
 
-### โครงสร้างข้อมูล / Data Layout
+---
 
-Binary format ที่ถอดรหัสได้:
-- `TermData` = `Term(str)` + `TermType(int)` + `Languages[21](str[])` + `DescBlob(str)` + `Trailing(int)`
-- `Languages[21]` ประกอบด้วย 3 metadata columns + 18 ภาษา (EN/JA/RU/FR/DE/ES/PT/ZH-CN/ZH-TW/KO/IT/NL/TR/FR-CA/AR ฯลฯ)
+### วิธีใช้งาน
 
-### คำสั่ง / CLI
+#### อ่านจากไฟล์ .dat (UABEA RAW export)
 
-| คำสั่ง | รายละเอียด / Description |
-|--------|--------------------------|
+```bash
+python i2_localization.py I2Languages.dat --stats
+python i2_localization.py I2Languages.dat --export-json terms.json
+```
+
+#### อ่านจากไฟล์ .assets โดยตรง (ไม่ต้องผ่าน UABEA)
+
+**PC:**
+```bash
+python i2_localization.py "<GameName>_Data/resources.assets" --export-json terms.json
+```
+
+**PS4:**
+```bash
+python i2_localization.py "Image0/Media_Data/resources.assets" --export-json terms.json
+```
+
+ถ้ารู้ pathID ของ I2Languages ให้ระบุตรงๆ เพื่อความเร็ว:
+```bash
+python i2_localization.py resources.assets --path-id 27659 --export-json terms.json
+```
+
+---
+
+### คำสั่งทั้งหมด / All Commands
+
+| คำสั่ง | รายละเอียด |
+|--------|------------|
 | `--stats` | แสดงสถิติจำนวน term และ translation ต่อภาษา |
 | `--export-json <out>` | Export ทุก term พร้อม key และ translation ทุกภาษา เป็น JSON |
 | `--export-csv <out>` | Export เป็น CSV (เปิดใน Excel ได้) |
@@ -212,24 +303,17 @@ Binary format ที่ถอดรหัสได้:
 | `--path-id <id>` | (`.assets` เท่านั้น) ระบุ pathID ของ MonoBehaviour โดยตรง |
 
 ```bash
-# Export จาก UABEA RAW export (.dat)
-python i2_localization.py I2Languages.dat --export-json terms.json
-
-# Export โดยตรงจาก Unity assets file (ไม่ต้องผ่าน UABEA)
-python i2_localization.py resources.assets --export-json terms.json
-
-# ระบุ pathID โดยตรง (ถ้ารู้)
-python i2_localization.py resources.assets --path-id 27659 --export-json terms.json
-
 # ดูสถิติ
-python i2_localization.py I2Languages.dat --stats
+python i2_localization.py resources.assets --stats
 
 # ค้นหาคำ
-python i2_localization.py I2Languages.dat --find "Crusade" --lang en
+python i2_localization.py resources.assets --find "Crusade" --lang en
 
 # แปลใหม่แล้ว import กลับ
 python i2_localization.py I2Languages.dat --import-json my_thai.json --output patched.dat
 ```
+
+---
 
 ### รูปแบบ JSON / JSON Format
 
@@ -246,21 +330,23 @@ python i2_localization.py I2Languages.dat --import-json my_thai.json --output pa
 }
 ```
 
+---
+
 ### Python API
 
 ```python
 from i2_localization import parse_dat, export_json, import_json, find_terms
 
-# From UABEA RAW export
+# จาก UABEA RAW export
 terms, languages = parse_dat("I2Languages.dat")
 
-# Or directly from Unity assets file (requires UnityPy)
+# จาก Unity assets file โดยตรง (PC หรือ PS4)
 terms, languages = parse_dat("resources.assets")
-terms, languages = parse_dat("resources.assets", path_id=27659)  # specific pathID
+terms, languages = parse_dat("resources.assets", path_id=27659)
 
 export_json(terms, languages, "out.json")
 
-# Search
+# ค้นหา
 results = find_terms(terms, languages, "ability")
 for t in results:
     print(t.key, "→", t.english)
@@ -277,16 +363,14 @@ for t in results:
 ### CLI
 
 | คำสั่ง | ผลลัพธ์ |
-|---|---|
+|--------|---------|
 | `python addressables_catalog.py catalog.json` | แสดง summary |
 | `python addressables_catalog.py catalog.json --fonts` | แสดง font ทั้งหมด |
 | `python addressables_catalog.py catalog.json <pattern>` | ค้นหาด้วย regex |
 | `python addressables_catalog.py catalog.json --patch-crc out.json` | Patch CRC แล้วบันทึก |
 
-เพิ่ม `--output <file>` เพื่อเซฟผลลัพธ์เป็นไฟล์ (สร้างโฟลเดอร์อัตโนมัติ):
-
 ```bash
-# แสดง font ทั้งหมด พร้อมชื่อ bundle ที่อยู่ แล้วเซฟเป็นไฟล์
+# แสดง font ทั้งหมดพร้อม bundle ที่อยู่
 python addressables_catalog.py catalog.json --fonts --output result/fonts.txt
 
 # ค้นหาไฟล์ .otf และ .ttf ทั้งหมด
@@ -298,11 +382,11 @@ python addressables_catalog.py catalog.json --patch-crc catalog_patched.json
 
 **ตัวอย่าง output:**
 ```
-[Assets/Resources_moved/Fonts/Headings/6092-Reg.otf]  Assets/.../6092-Reg.otf  →  000f31824b70d0c577402a06d3c2cb8c.bundle
-[Assets/Resources_moved/Fonts/Body/NotoSans.ttf]  Assets/.../NotoSans.ttf  →  0a1d5db632cad408c6acb9f588cfc39c.bundle
+[Assets/Resources_moved/Fonts/Headings/6092-Reg.otf]  →  000f31824b70d0c577402a06d3c2cb8c.bundle
+[Assets/Resources_moved/Fonts/Body/NotoSans.ttf]       →  0a1d5db632cad408c6acb9f588cfc39c.bundle
 ```
 
-### ใช้ใน Python script
+### Python API
 
 ```python
 from addressables_catalog import (
@@ -312,16 +396,13 @@ from addressables_catalog import (
 
 cat = read_catalog("catalog.json")   # รองรับ .json / .bin / .bundle
 
-# หา font ทั้งหมดพร้อม bundle ที่อยู่
 fonts = find_font_resources(cat)
 for loc in fonts:
     bundle = get_bundle_for_location(loc)
     print(f"{loc.primary_key}  →  {bundle}")
 
-# ค้นหาด้วย pattern
 results = find_resources(cat, r"\.otf|\.ttf")
 
-# Patch CRC แล้วบันทึก
 n = patch_crc(cat)
 write_catalog_json(cat, "catalog_patched.json")
 print(f"Patched {n} bundle CRC(s)")
@@ -331,10 +412,30 @@ print(f"Patched {n} bundle CRC(s)")
 
 ## เครดิต / Credits
 
-| โปรเจกต์ | ผู้สร้าง | หมายเหตุ |
-|---|---|---|
-| [Unity_Font_Replacer](https://github.com/snowyegret23/Unity_Font_Replacer) | snowyegret23 | ต้นฉบับของ fork นี้ |
+### โปรเจกต์ต้นแบบ / Source Projects
+
+| โปรเจกต์ | ผู้สร้าง | การใช้งาน |
+|----------|----------|-----------|
+| [Unity_Font_Replacer](https://github.com/snowyegret23/Unity_Font_Replacer) | snowyegret23 | ต้นฉบับของ fork นี้ / Original project this is forked from |
 | [AddressablesTools](https://github.com/nesrak1/AddressablesTools) | nesrak1 | C# library ต้นแบบของ `addressables_catalog.py` |
+
+### เครื่องมือภายนอก / External Tools
+
+| เครื่องมือ | ผู้สร้าง | การใช้งาน |
+|-----------|----------|-----------|
+| [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) | Perfare | สร้าง dummy DLL จาก IL2CPP games (PC) |
+
+### Python Libraries
+
+| Library | ลิงก์ | การใช้งาน |
+|---------|-------|-----------|
+| [UnityPy](https://github.com/K0lb3/UnityPy) | K0lb3 | อ่าน/เขียน Unity assets files |
+| [TypeTreeGeneratorAPI](https://github.com/nicoco007/TypeTreeGeneratorAPI) | nicoco007 | สร้าง type tree จาก IL2CPP สำหรับ SDF parsing |
+| [Pillow](https://github.com/python-pillow/Pillow) | python-pillow | Image processing สำหรับ SDF atlas |
+| [scipy](https://github.com/scipy/scipy) | SciPy team | Euclidean Distance Transform สำหรับ SDF generation |
+| [fontTools](https://github.com/fonttools/fonttools) | fonttools | อ่านข้อมูล TTF font (glyph metrics, charset) |
+| [texture2ddecoder](https://github.com/K0lb3/texture2ddecoder) | K0lb3 | Decode compressed texture formats (optional) |
+| [numpy](https://github.com/numpy/numpy) | NumPy team | Array operations สำหรับ SDF pipeline (optional) |
 
 ---
 
