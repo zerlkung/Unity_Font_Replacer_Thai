@@ -5963,17 +5963,64 @@ def get_compile_method(datapath: str) -> str:
         return "Il2cpp"
 
 
+def _find_il2cpp_files(
+    game_path: str, data_path: str
+) -> tuple:
+    """KR: IL2CPP 바이너리와 메타데이터 파일 경로를 PC/PS4/콘솔 순서로 탐색합니다.
+    EN: Locates the IL2CPP binary and global-metadata.dat for PC and console layouts.
+
+    PC layout:   <game_path>/GameAssembly.dll
+                 <data_path>/il2cpp_data/Metadata/global-metadata.dat
+    PS4 layout:  <game_path>/eboot.bin
+                 <data_path>/Metadata/global-metadata.dat
+
+    Returns:
+        (binary_path, metadata_path) — either value may be None if not found.
+    """
+    binary_candidates = [
+        os.path.join(game_path, "GameAssembly.dll"),   # PC / Windows
+        os.path.join(game_path, "eboot.bin"),           # PS4
+        os.path.join(game_path, "GameAssembly.prx"),    # PS4 (rare)
+    ]
+    metadata_candidates = [
+        os.path.join(data_path, "il2cpp_data", "Metadata", "global-metadata.dat"),  # PC
+        os.path.join(data_path, "Metadata", "global-metadata.dat"),                  # PS4
+    ]
+    binary_path = next((p for p in binary_candidates if os.path.exists(p)), None)
+    metadata_path = next((p for p in metadata_candidates if os.path.exists(p)), None)
+    return binary_path, metadata_path
+
+
 def _create_generator(
     unity_version: str,
     game_path: str,
     data_path: str,
     compile_method: str,
     lang: Language = "ko",
-) -> TypeTreeGenerator:
+):
     """KR: 타입트리 생성기를 구성하고 Mono/Il2cpp 메타데이터를 로드합니다.
     EN: Configures the TypeTree generator and loads Mono/Il2cpp metadata.
+
+    Returns None if TypeTreeGeneratorAPI is not installed; UnityPy will then
+    fall back to its built-in type trees (built-in Unity types work, custom
+    MonoBehaviours such as TMP_FontAsset are skipped).
     """
-    generator = TypeTreeGenerator(unity_version)
+    try:
+        generator = TypeTreeGenerator(unity_version)
+    except Exception as e:
+        if lang == "ko":
+            _log_console(
+                f"[generator] TypeTreeGenerator 초기화 실패 ({e})\n"
+                "  TypeTreeGeneratorAPI가 설치되지 않았습니다. 내장 타입트리로 대체합니다.\n"
+                "  SDF/TMP 폰트는 스캔되지 않을 수 있습니다."
+            )
+        else:
+            _log_console(
+                f"[generator] TypeTreeGenerator init failed ({e})\n"
+                "  TypeTreeGeneratorAPI is not installed. Using built-in type trees.\n"
+                "  SDF/TMP fonts may not be scanned."
+            )
+        return None
     if compile_method == "Mono":
         managed_dir = os.path.join(data_path, "Managed")
         for fn in os.listdir(managed_dir):
@@ -5988,15 +6035,27 @@ def _create_generator(
                 else:
                     _log_console(f"[generator] Failed to load DLL: {fn} ({e})")
     else:
-        il2cpp_path = os.path.join(game_path, "GameAssembly.dll")
-        with open(il2cpp_path, "rb") as f:
-            il2cpp = f.read()
-        metadata_path = os.path.join(
-            data_path, "il2cpp_data", "Metadata", "global-metadata.dat"
-        )
-        with open(metadata_path, "rb") as f:
-            metadata = f.read()
-        generator.load_il2cpp(il2cpp, metadata)
+        il2cpp_path, metadata_path = _find_il2cpp_files(game_path, data_path)
+        if il2cpp_path and metadata_path:
+            try:
+                with open(il2cpp_path, "rb") as f:
+                    il2cpp = f.read()
+                with open(metadata_path, "rb") as f:
+                    metadata = f.read()
+                generator.load_il2cpp(il2cpp, metadata)
+            except Exception as e:
+                # PS4/console binaries may not be supported — fall back to built-in type trees.
+                # TTF Font objects will still parse; custom MonoBehaviours (TMP) will be skipped.
+                if lang == "ko":
+                    _log_console(
+                        f"[generator] IL2CPP 타입트리 로드 실패 ({e}) — 내장 타입트리로 대체합니다.\n"
+                        "  SDF/TMP 폰트는 스캔되지 않을 수 있습니다."
+                    )
+                else:
+                    _log_console(
+                        f"[generator] Failed to load IL2CPP type trees ({e}) — using built-in type trees.\n"
+                        "  SDF/TMP fonts may not be scanned."
+                    )
     return generator
 
 
@@ -6142,7 +6201,8 @@ def _scan_fonts_in_asset_file(
     env = None
     try:
         env = UnityPy.load(assets_file)
-        env.typetree_generator = generator
+        if generator is not None:
+            env.typetree_generator = generator
     except Exception as e:
         if lang == "ko":
             return scanned, f"UnityPy.load 실패: {assets_file} ({e})"
@@ -7341,7 +7401,8 @@ def replace_fonts_in_file(
         generator = _create_generator(
             unity_version, game_path, data_path, compile_method, lang=lang
         )
-    env.typetree_generator = generator
+    if generator is not None:
+        env.typetree_generator = generator
     if replacement_lookup is None:
         replacement_lookup, _ = build_replacement_lookup(replacements)
     replacement_meta_lookup: dict[tuple[str, str, str, int], JsonDict] = {}
@@ -10348,19 +10409,28 @@ Examples:
     if compile_method == "Il2cpp" and not os.path.exists(
         os.path.join(data_path, "Managed")
     ):
-        binary_path = os.path.join(game_path, "GameAssembly.dll")
-        metadata_path = os.path.join(
-            data_path, "il2cpp_data", "Metadata", "global-metadata.dat"
-        )
-        if not os.path.exists(binary_path) or not os.path.exists(metadata_path):
+        binary_path, metadata_path = _find_il2cpp_files(game_path, data_path)
+        if binary_path is None or metadata_path is None:
+            missing = []
+            if binary_path is None:
+                missing.append("GameAssembly.dll / eboot.bin")
+            if metadata_path is None:
+                missing.append("global-metadata.dat")
+            missing_str = ", ".join(missing)
             if is_ko:
                 exit_with_error(
-                    "Il2cpp 게임의 경우 'Managed' 폴더 또는 'GameAssembly.dll'과 'global-metadata.dat' 파일이 필요합니다.\n올바른 Unity 게임 폴더인지 확인해주세요.",
+                    f"Il2cpp 게임의 경우 'Managed' 폴더 또는 IL2CPP 파일({missing_str})이 필요합니다.\n"
+                    f"PC 게임: <game_path>/GameAssembly.dll + <data_path>/il2cpp_data/Metadata/global-metadata.dat\n"
+                    f"PS4 게임: <game_path>/eboot.bin + <data_path>/Metadata/global-metadata.dat\n"
+                    "올바른 Unity 게임 폴더인지 확인해주세요.",
                     lang=lang,
                 )
             else:
                 exit_with_error(
-                    "For Il2cpp games, the 'Managed' folder or 'GameAssembly.dll' and 'global-metadata.dat' files are required.\nPlease check that this is a valid Unity game folder.",
+                    f"For Il2cpp games, the 'Managed' folder or IL2CPP files ({missing_str}) are required.\n"
+                    f"PC:  <game_path>/GameAssembly.dll + <data_path>/il2cpp_data/Metadata/global-metadata.dat\n"
+                    f"PS4: <game_path>/eboot.bin + <data_path>/Metadata/global-metadata.dat\n"
+                    "Please check that this is a valid Unity game folder.",
                     lang=lang,
                 )
 
@@ -10408,15 +10478,37 @@ Examples:
                     _log_console(f"Compile method re-detected: {compile_method}")
             else:
                 _log_console(process.stderr)
-                if is_ko:
-                    exit_with_error("Il2cpp 더미 DLL 생성 실패", lang=lang)
+                if mode == "parse":
+                    if is_ko:
+                        _log_console(
+                            "[경고] Il2cpp 더미 DLL 생성 실패 — --parse 모드에서는 계속 진행합니다.\n"
+                            "  TTF 폰트만 스캔되며 SDF/TMP 폰트는 생략될 수 있습니다."
+                        )
+                    else:
+                        _log_console(
+                            "[warning] Failed to generate Il2cpp dummy DLL — continuing in --parse mode.\n"
+                            "  Only TTF fonts will be scanned; SDF/TMP fonts may be skipped."
+                        )
                 else:
-                    exit_with_error("Failed to generate Il2cpp dummy DLL", lang=lang)
+                    if is_ko:
+                        exit_with_error("Il2cpp 더미 DLL 생성 실패", lang=lang)
+                    else:
+                        exit_with_error("Failed to generate Il2cpp dummy DLL", lang=lang)
         except Exception as e:
-            if is_ko:
-                exit_with_error(f"Il2CppDumper 실행 중 예외 발생: {e}", lang=lang)
+            if mode == "parse":
+                if is_ko:
+                    _log_console(
+                        f"[경고] Il2CppDumper 실행 실패: {e} — --parse 모드에서는 계속 진행합니다."
+                    )
+                else:
+                    _log_console(
+                        f"[warning] Il2CppDumper failed: {e} — continuing in --parse mode."
+                    )
             else:
-                exit_with_error(f"Exception while running Il2CppDumper: {e}", lang=lang)
+                if is_ko:
+                    exit_with_error(f"Il2CppDumper 실행 중 예외 발생: {e}", lang=lang)
+                else:
+                    exit_with_error(f"Exception while running Il2CppDumper: {e}", lang=lang)
 
     if mode == "parse":
         parse_fonts(
