@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
 import gc
 import inspect
 import json
@@ -59,6 +60,11 @@ from UnityPy.enums.BundleFile import CompressionFlags
 from UnityPy.files.SerializedFile import SerializedType
 from UnityPy.helpers import CompressionHelper
 from UnityPy.helpers.TypeTreeGenerator import TypeTreeGenerator
+from addressables_catalog import (
+    find_font_resources,
+    get_bundle_for_location,
+    read_catalog,
+)
 try:
     from UnityPy.enums import TextureFormat as _UnityTextureFormatEnum
 except Exception:  # pragma: no cover - KR: 런타임에서 선택적으로 사용 / EN: optionally used at runtime
@@ -178,6 +184,20 @@ def _ps5_build_bc_formats_from_layout_meta() -> dict[int, tuple[int, int, int, s
 # KR: BC 포맷 테이블: 레이아웃 메타에서 빌드된 {포맷ID: (블록W, 블록H, 블록바이트, 디코더명)}
 # EN: BC format table: built from layout meta {formatID: (blockW, blockH, blockBytes, decoderName)}
 _PS5_BC_FORMATS: dict[int, tuple[int, int, int, str]] = _ps5_build_bc_formats_from_layout_meta()
+
+# KR: PS4 BC swizzle은 Console-Swizzler/GFD-Studio와 동일하게 8x8 block Morton order를 사용합니다.
+# EN: PS4 BC swizzle uses the same 8x8 block Morton order seen in Console-Swizzler/GFD-Studio.
+_PS4_MORTON_8X8: tuple[int, ...] = (
+    0, 1, 8, 9, 2, 3, 10, 11,
+    16, 17, 24, 25, 18, 19, 26, 27,
+    4, 5, 12, 13, 6, 7, 14, 15,
+    20, 21, 28, 29, 22, 23, 30, 31,
+    32, 33, 40, 41, 34, 35, 42, 43,
+    48, 49, 56, 57, 50, 51, 58, 59,
+    36, 37, 44, 45, 38, 39, 46, 47,
+    52, 53, 60, 61, 54, 55, 62, 63,
+)
+_PS4_SWIZZLE_BLOCK_DIM = 8
 
 # KR: Addrlib v2 (GFX10+) swizzle 모드 상수 (PS5에서 사용)
 # EN: Addrlib v2 (GFX10+) swizzle mode constants (used on PS5)
@@ -2187,53 +2207,76 @@ def find_ggm_file(data_path: str) -> str | None:
     return None
 
 
+def _resolve_data_path_candidates(path: str) -> list[tuple[str, str]]:
+    """KR: 입력 경로에서 가능한 (game_path, data_path) 후보를 만든다.
+    EN: Build candidate (game_path, data_path) pairs from the input path.
+    """
+    normalized = os.path.normpath(os.path.abspath(path))
+    candidates: list[tuple[str, str]] = []
+
+    def _add(game_path: str, data_path: str) -> None:
+        pair = (os.path.normpath(game_path), os.path.normpath(data_path))
+        if pair not in candidates:
+            candidates.append(pair)
+
+    basename = os.path.basename(normalized).lower()
+    parent = os.path.dirname(normalized)
+
+    if basename.endswith("_data"):
+        _add(parent, normalized)
+        return candidates
+
+    if basename == "media":
+        _add(parent, normalized)
+        _add(normalized, normalized)
+        return candidates
+
+    _add(normalized, os.path.join(normalized, "Media"))
+    try:
+        data_folders = [
+            d
+            for d in os.listdir(normalized)
+            if d.lower().endswith("_data")
+            and os.path.isdir(os.path.join(normalized, d))
+        ]
+    except OSError:
+        data_folders = []
+    for folder_name in data_folders:
+        _add(normalized, os.path.join(normalized, folder_name))
+    return candidates
+
+
 def resolve_game_path(path: str, lang: Language = "ko") -> tuple[str, str]:
     """KR: 입력 경로를 게임 루트와 _Data 경로로 정규화한다.
     EN: Normalize the input path to game root and _Data path.
     """
-    path = os.path.normpath(os.path.abspath(path))
+    attempted_data_paths: list[str] = []
 
-    if path.lower().endswith("_data"):
-        data_path = path
-        game_path = os.path.dirname(path)
-    else:
-        game_path = path
-        data_folders = [
-            d
-            for d in os.listdir(path)
-            if d.lower().endswith("_data") and os.path.isdir(os.path.join(path, d))
-        ]
+    for game_path, data_path in _resolve_data_path_candidates(path):
+        if not os.path.isdir(data_path):
+            attempted_data_paths.append(data_path)
+            continue
+        ggm_path = find_ggm_file(data_path)
+        if ggm_path:
+            return game_path, data_path
+        attempted_data_paths.append(data_path)
 
-        if not data_folders:
-            if lang == "ko":
-                raise FileNotFoundError(f"'{path}'에서 _Data 폴더를 찾을 수 없습니다.")
-            raise FileNotFoundError(f"Could not find _Data folder in '{path}'.")
-
-        data_path = os.path.join(game_path, data_folders[0])
-
-    ggm_path = find_ggm_file(data_path)
-    if not ggm_path:
-        if lang == "ko":
-            raise FileNotFoundError(
-                f"'{data_path}'에서 globalgamemanagers 파일을 찾을 수 없습니다.\n올바른 Unity 게임 폴더인지 확인해주세요."
-            )
+    attempted_text = ", ".join(attempted_data_paths) if attempted_data_paths else path
+    if lang == "ko":
         raise FileNotFoundError(
-            f"Could not find a globalgamemanagers file in '{data_path}'.\nPlease verify this is a valid Unity game folder."
+            f"입력 경로 '{path}'에서 유효한 데이터 폴더를 찾지 못했습니다.\n시도한 경로: {attempted_text}"
         )
-
-    return game_path, data_path
+    raise FileNotFoundError(
+        f"Could not find a valid data folder from '{path}'.\nTried: {attempted_text}"
+    )
 
 
 def get_data_path(game_path: str, lang: Language = "ko") -> str:
     """KR: 게임 루트에서 _Data 폴더 경로를 반환한다.
     EN: Return the _Data folder path from the game root.
     """
-    data_folders = [i for i in os.listdir(game_path) if i.lower().endswith("_data")]
-    if not data_folders:
-        if lang == "ko":
-            raise FileNotFoundError(f"'{game_path}'에서 _Data 폴더를 찾을 수 없습니다.")
-        raise FileNotFoundError(f"Could not find _Data folder in '{game_path}'.")
-    return os.path.join(game_path, data_folders[0])
+    _, data_path = resolve_game_path(game_path, lang=lang)
+    return data_path
 
 
 def get_unity_version(game_path: str, lang: Language = "ko") -> str:
@@ -3261,6 +3304,76 @@ def _encode_alpha8_replacement_bytes(
     return alpha_raw, aw, ah, "direct"
 
 
+def _apply_ps4_bc_swizzle_to_texture(
+    parse_dict: Any,
+    *,
+    width: int,
+    height: int,
+) -> tuple[bool, str]:
+    """KR: UnityPy가 인코딩한 BC block data에 PS4 swizzle을 적용합니다.
+    EN: Apply PS4 swizzle to BC block data encoded by UnityPy.
+    """
+    try:
+        texture_format = int(getattr(parse_dict, "m_TextureFormat", -1) or -1)
+    except Exception:
+        return False, "unknown_format"
+
+    bc_info = _PS5_BC_FORMATS.get(texture_format)
+    if not bc_info:
+        return False, "unsupported_format"
+    block_width, block_height, block_data_size, _decoder_name = bc_info
+
+    try:
+        mip_count = int(getattr(parse_dict, "m_MipCount", 1) or 1)
+    except Exception:
+        mip_count = 1
+    if mip_count > 1:
+        return False, "mips_unsupported"
+
+    raw = getattr(parse_dict, "image_data", None)
+    if not isinstance(raw, (bytes, bytearray)):
+        return False, "missing_image_data"
+    raw_bytes = bytes(raw)
+
+    unswizzled_size = (
+        math.ceil(width / block_width)
+        * math.ceil(height / block_height)
+        * block_data_size
+    )
+    if len(raw_bytes) < unswizzled_size:
+        return False, "encoded_size_too_small"
+
+    expected_swizzled_size = _ps4_expected_swizzled_bc_size(
+        width, height, block_width, block_height, block_data_size
+    )
+    complete_size = int(
+        getattr(parse_dict, "m_CompleteImageSize", len(raw_bytes)) or len(raw_bytes)
+    )
+    if complete_size != expected_swizzled_size:
+        return False, f"size_mismatch:{complete_size}!={expected_swizzled_size}"
+
+    swizzled = ps4_swizzle_bc_blocks(
+        raw_bytes[:unswizzled_size],
+        width,
+        height,
+        block_width,
+        block_height,
+        block_data_size,
+    )
+    parse_dict.image_data = swizzled
+    if hasattr(parse_dict, "m_CompleteImageSize"):
+        parse_dict.m_CompleteImageSize = int(len(swizzled))
+    stream_data = getattr(parse_dict, "m_StreamData", None)
+    if stream_data is not None:
+        try:
+            stream_data.offset = 0
+            stream_data.size = 0
+            stream_data.path = ""
+        except Exception:
+            pass
+    return True, "ok"
+
+
 @lru_cache(maxsize=128)
 def _ps5_bit_positions(mask: int) -> tuple[int, ...]:
     """KR: 마스크에서 세트된 비트 위치 목록을 반환합니다.
@@ -3424,6 +3537,134 @@ def _texture_format_is_bc(texture_format: int) -> bool:
     EN: Return whether the format is BC (block compressed).
     """
     return int(texture_format) in _PS5_BC_FORMATS
+
+
+def _align_up(value: int, pad: int) -> int:
+    """KR: 값을 pad 배수로 올림 정렬한다.
+    EN: Align a value up to the next multiple of pad.
+    """
+    if pad <= 0:
+        raise ValueError("pad must be positive")
+    return ((int(value) + int(pad) - 1) // int(pad)) * int(pad)
+
+
+def _ps4_expected_swizzled_bc_size(
+    width: int,
+    height: int,
+    block_width: int,
+    block_height: int,
+    block_data_size: int,
+) -> int:
+    """KR: PS4 BC swizzle 후 예상 바이트 수를 계산한다.
+    EN: Compute the expected byte size after PS4 BC swizzle.
+    """
+    block_count_x = math.ceil(width / block_width)
+    block_count_y = math.ceil(height / block_height)
+    return _align_up(block_count_x, _PS4_SWIZZLE_BLOCK_DIM) * _align_up(
+        block_count_y, _PS4_SWIZZLE_BLOCK_DIM
+    ) * block_data_size
+
+
+def _ps4_swizzle_bc_blocks(
+    data: bytes,
+    width: int,
+    height: int,
+    block_width: int,
+    block_height: int,
+    block_data_size: int,
+    *,
+    unswizzle: bool,
+) -> bytes:
+    """KR: PS4 BC block data를 swizzle/unswizzle한다.
+    Console-Swizzler와 GFD-Studio가 공통으로 사용하는 8x8 Morton block order를 따른다.
+
+    EN: Swizzle/unswizzle PS4 BC block data.
+    Follows the shared 8x8 Morton block order used by Console-Swizzler and GFD-Studio.
+    """
+    block_count_x = math.ceil(width / block_width)
+    block_count_y = math.ceil(height / block_height)
+    aligned_x = _align_up(block_count_x, _PS4_SWIZZLE_BLOCK_DIM)
+    aligned_y = _align_up(block_count_y, _PS4_SWIZZLE_BLOCK_DIM)
+    unswizzled_size = block_count_x * block_count_y * block_data_size
+    swizzled_size = aligned_x * aligned_y * block_data_size
+
+    raw = bytes(data)
+    if unswizzle:
+        if len(raw) < swizzled_size:
+            raise ValueError(
+                f"PS4 unswizzle expects at least {swizzled_size} bytes, got {len(raw)}"
+            )
+        source = raw[:swizzled_size]
+        out = bytearray(unswizzled_size)
+        dest_index = 0
+        for base_y in range(0, aligned_y, _PS4_SWIZZLE_BLOCK_DIM):
+            for base_x in range(0, aligned_x, _PS4_SWIZZLE_BLOCK_DIM):
+                for morton in _PS4_MORTON_8X8:
+                    data_x = base_x + (morton % _PS4_SWIZZLE_BLOCK_DIM)
+                    data_y = base_y + (morton // _PS4_SWIZZLE_BLOCK_DIM)
+                    if data_x < block_count_x and data_y < block_count_y:
+                        data_index = (
+                            (data_y * block_count_x + data_x) * block_data_size
+                        )
+                        out[data_index:data_index + block_data_size] = source[
+                            dest_index:dest_index + block_data_size
+                        ]
+                    dest_index += block_data_size
+        return bytes(out)
+
+    if len(raw) < unswizzled_size:
+        raise ValueError(
+            f"PS4 swizzle expects at least {unswizzled_size} bytes, got {len(raw)}"
+        )
+    source = raw[:unswizzled_size]
+    out = bytearray(swizzled_size)
+    dest_index = 0
+    for base_y in range(0, aligned_y, _PS4_SWIZZLE_BLOCK_DIM):
+        for base_x in range(0, aligned_x, _PS4_SWIZZLE_BLOCK_DIM):
+            for morton in _PS4_MORTON_8X8:
+                data_x = base_x + (morton % _PS4_SWIZZLE_BLOCK_DIM)
+                data_y = base_y + (morton // _PS4_SWIZZLE_BLOCK_DIM)
+                if data_x < block_count_x and data_y < block_count_y:
+                    data_index = (data_y * block_count_x + data_x) * block_data_size
+                    out[dest_index:dest_index + block_data_size] = source[
+                        data_index:data_index + block_data_size
+                    ]
+                dest_index += block_data_size
+    return bytes(out)
+
+
+def ps4_swizzle_bc_blocks(
+    data: bytes,
+    width: int,
+    height: int,
+    block_width: int,
+    block_height: int,
+    block_data_size: int,
+) -> bytes:
+    """KR: 선형 BC block data를 PS4 swizzled order로 변환한다.
+    EN: Convert linear BC block data to PS4 swizzled order.
+    """
+    return _ps4_swizzle_bc_blocks(
+        data, width, height, block_width, block_height, block_data_size,
+        unswizzle=False,
+    )
+
+
+def ps4_unswizzle_bc_blocks(
+    data: bytes,
+    width: int,
+    height: int,
+    block_width: int,
+    block_height: int,
+    block_data_size: int,
+) -> bytes:
+    """KR: PS4 swizzled BC block data를 선형 순서로 복원한다.
+    EN: Restore PS4 swizzled BC block data to linear order.
+    """
+    return _ps4_swizzle_bc_blocks(
+        data, width, height, block_width, block_height, block_data_size,
+        unswizzle=True,
+    )
 
 
 def _texture_format_is_crunched(texture_format: int) -> bool:
@@ -5876,56 +6117,167 @@ def normalize_sdf_data(data: JsonDict, deep_copy: bool = True) -> JsonDict:
     return result
 
 
+def find_catalog_json(game_path: str, lang: Language = "ko") -> str | None:
+    """KR: Addressables catalog.json 파일을 찾습니다.
+    EN: Locate the Addressables catalog.json file.
+    """
+    data_path = get_data_path(game_path, lang=lang)
+    normalized_game_path = os.path.normpath(os.path.abspath(game_path))
+    candidates = [
+        os.path.join(data_path, "StreamingAssets", "aa", "catalog.json"),
+        os.path.join(data_path, "aa", "catalog.json"),
+        os.path.join(data_path, "catalog.json"),
+        os.path.join(normalized_game_path, "StreamingAssets", "aa", "catalog.json"),
+        os.path.join(normalized_game_path, "aa", "catalog.json"),
+        os.path.join(normalized_game_path, "catalog.json"),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def get_font_bundle_targets_from_catalog(
+    catalog: Any,
+    lang: Language = "ko",
+) -> tuple[set[str], dict[str, Any]]:
+    """KR: catalog에서 폰트 관련 bundle 파일명 집합을 추출합니다.
+    EN: Extract the set of font-related bundle filenames from a catalog.
+    """
+    bundle_targets: set[str] = set()
+    font_resources = find_font_resources(catalog)
+    resource_names: set[str] = set()
+    resource_types: set[str] = set()
+
+    for loc in font_resources:
+        bundle_name = get_bundle_for_location(loc)
+        if bundle_name:
+            normalized_bundle_name = os.path.basename(str(bundle_name))
+            if normalized_bundle_name:
+                bundle_targets.add(normalized_bundle_name)
+                if not normalized_bundle_name.lower().endswith(".bundle"):
+                    bundle_targets.add(f"{normalized_bundle_name}.bundle")
+        for dep in getattr(loc, "dependencies", []) or []:
+            dep_internal_id = str(getattr(dep, "internal_id", "") or "").strip()
+            dep_base = os.path.basename(dep_internal_id.replace("\\", "/"))
+            if dep_base.lower().endswith(".bundle"):
+                bundle_targets.add(dep_base)
+        primary_key = str(getattr(loc, "primary_key", "") or "").strip()
+        if primary_key:
+            resource_names.add(primary_key)
+        resource_type = getattr(getattr(loc, "resource_type", None), "class_name", "")
+        if resource_type:
+            resource_types.add(str(resource_type))
+
+    summary: dict[str, Any] = {
+        "bundle_targets": set(bundle_targets),
+        "font_resource_count": len(font_resources),
+        "resource_name_count": len(resource_names),
+        "resource_types": sorted(resource_types),
+    }
+    if not bundle_targets:
+        if lang == "ko":
+            _log_debug("[catalog] 폰트 관련 bundle 항목을 찾지 못했습니다.")
+        else:
+            _log_debug("[catalog] No font-related bundle entries were found.")
+    return bundle_targets, summary
+
+
+def load_font_bundle_targets_from_game_catalog(
+    game_path: str,
+    lang: Language = "ko",
+) -> tuple[set[str] | None, dict[str, Any] | None]:
+    """KR: 게임의 catalog.json에서 폰트 관련 bundle 타깃을 로드합니다.
+    EN: Load font-related bundle targets from the game's catalog.json.
+    """
+    catalog_path = find_catalog_json(game_path, lang=lang)
+    if not catalog_path:
+        return None, None
+    try:
+        catalog = read_catalog(catalog_path)
+    except Exception as exc:
+        if lang == "ko":
+            _log_console(f"[catalog] catalog.json 로드 실패: {exc}")
+        else:
+            _log_console(f"[catalog] Failed to load catalog.json: {exc}")
+        return None, None
+
+    bundle_targets, summary = get_font_bundle_targets_from_catalog(catalog, lang=lang)
+    summary = dict(summary)
+    summary["catalog_path"] = catalog_path
+    return bundle_targets, summary
+
+
+def load_texture_metadata_sidecar(path: str) -> dict[str, Any] | None:
+    """KR: export된 Texture2D sidecar 메타데이터를 읽고 정규화한다.
+    EN: Load and normalize exported Texture2D sidecar metadata.
+    """
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    normalized: dict[str, Any] = dict(payload)
+    for key in (
+        "width",
+        "height",
+        "texture_format",
+        "platform",
+        "stream_size",
+        "image_data_size",
+    ):
+        if key not in normalized or normalized[key] is None:
+            continue
+        try:
+            normalized[key] = int(normalized[key])
+        except Exception:
+            pass
+
+    if "is_readable" in normalized:
+        normalized["is_readable"] = bool(normalized["is_readable"])
+
+    blob_b64 = normalized.get("platform_blob_base64")
+    if isinstance(blob_b64, str) and blob_b64.strip():
+        try:
+            normalized["platform_blob"] = base64.b64decode(blob_b64)
+        except Exception:
+            normalized["platform_blob"] = None
+    else:
+        normalized["platform_blob"] = None
+    return normalized
+
+
 def find_assets_files(
     game_path: str,
     lang: Language = "ko",
     target_files: set[str] | None = None,
     exclude_exts: set[str] | None = None,
+    bundle_targets: set[str] | None = None,
 ) -> list[str]:
     """KR: 게임에서 처리 대상 에셋 파일 목록을 수집합니다.
     target_files가 있으면 해당 파일명으로 스캔 대상을 제한합니다.
     exclude_exts가 있으면 해당 확장자를 추가 제외합니다.
+    bundle_targets가 있으면 해당 .bundle 파일명만 스캔합니다.
     EN: Collects the list of asset files to process from the game.
     If target_files is provided, limits scan targets to those filenames.
     If exclude_exts is provided, additionally excludes those extensions.
+    If bundle_targets is provided, only matching .bundle filenames are scanned.
     """
     data_path = get_data_path(game_path, lang=lang)
     assets_files: list[str] = []
     normalized_targets = (
         {os.path.basename(name) for name in target_files} if target_files else None
     )
-    blacklist_exts = {
-        ".dll",
-        ".manifest",
-        ".exe",
-        ".txt",
-        ".json",
-        ".xml",
-        ".log",
-        ".ini",
-        ".cfg",
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".gif",
-        ".bmp",
-        ".wav",
-        ".mp3",
-        ".ogg",
-        ".mp4",
-        ".avi",
-        ".mov",
-        ".bak",
-        ".info",
-        ".config",
-        ".browser",
-        ".aspx",
-        ".map",
-        ".resource",
-        ".resources",
-    }
-    if exclude_exts:
-        blacklist_exts.update({str(ext).lower() for ext in exclude_exts if ext})
+    normalized_bundle_targets = (
+        {os.path.basename(name) for name in bundle_targets} if bundle_targets else None
+    )
+    allowed_exts = {".assets", ".bundle"}
+    blocked_exts = {str(ext).lower() for ext in exclude_exts if ext} if exclude_exts else set()
 
     skip_root_prefixes = [
         os.path.normcase(
@@ -5946,9 +6298,23 @@ def find_assets_files(
             if normalized_targets is not None and fn not in normalized_targets:
                 continue
             ext = os.path.splitext(fn)[1].lower()
-            if ext in blacklist_exts:
+            if ext not in allowed_exts:
                 continue
-            assets_files.append(os.path.join(root, fn))
+            if ext in blocked_exts:
+                continue
+            if (
+                ext == ".bundle"
+                and normalized_bundle_targets is not None
+                and fn not in normalized_bundle_targets
+            ):
+                continue
+            candidate_path = os.path.join(root, fn)
+            try:
+                if os.path.getsize(candidate_path) <= 0:
+                    continue
+            except OSError:
+                continue
+            assets_files.append(candidate_path)
     assets_files.sort()
     return assets_files
 
@@ -6396,11 +6762,18 @@ def scan_fonts(
     """
     data_path = get_data_path(game_path, lang=lang)
     unity_version = get_unity_version(game_path, lang=lang)
+    bundle_targets: set[str] | None = None
+    catalog_summary: dict[str, Any] | None = None
+    if not target_files:
+        bundle_targets, catalog_summary = load_font_bundle_targets_from_game_catalog(
+            game_path, lang=lang
+        )
     assets_files = find_assets_files(
         game_path,
         lang=lang,
         target_files=target_files,
         exclude_exts=exclude_exts,
+        bundle_targets=bundle_targets,
     )
     compile_method = get_compile_method(data_path)
     generator = _create_generator(
@@ -6420,6 +6793,12 @@ def scan_fonts(
     if scan_jobs < 1:
         scan_jobs = 1
     if lang == "ko":
+        if catalog_summary and bundle_targets is not None:
+            _log_console(
+                "[catalog] 폰트 관련 bundle 필터 적용: "
+                f"{len(bundle_targets)}개 bundle / "
+                f"{int(catalog_summary.get('font_resource_count', 0))}개 리소스"
+            )
         if target_files:
             _log_console(
                 f"[scan_fonts] --target-file 기준 스캔 시작: {total_files}개 파일"
@@ -6427,6 +6806,12 @@ def scan_fonts(
         else:
             _log_console(f"[scan_fonts] 전체 스캔 시작: {total_files}개 파일")
     else:
+        if catalog_summary and bundle_targets is not None:
+            _log_console(
+                "[catalog] Applied font bundle filter: "
+                f"{len(bundle_targets)} bundle(s) / "
+                f"{int(catalog_summary.get('font_resource_count', 0))} resource(s)"
+            )
         if target_files:
             _log_console(
                 f"[scan_fonts] Starting target-file scan: {total_files} file(s)"

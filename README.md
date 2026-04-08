@@ -28,11 +28,14 @@ Fork จาก / Forked from: [snowyegret23/Unity_Font_Replacer](https://github.
 |----------|---------------------|---------------------------------------------|----------|
 | **PC (Windows, IL2CPP)** | TTF + SDF | TTF + SDF | ต้องการ Il2CppDumper + TypeTreeGeneratorAPI |
 | **PC (Windows, Mono)** | TTF + SDF | TTF + SDF | ใช้ Managed/ folder โดยตรง |
-| **PS4** | TTF เท่านั้น | TTF เท่านั้น | Il2CppDumper ยังไม่รองรับ PS4 binary |
+| **PS4** | TTF เท่านั้น | TTF เท่านั้น | รองรับ BC texture swizzle — SDF/TMP ยังไม่รองรับ |
 | **PS5** | TTF + SDF | TTF + SDF | ต้องใช้ `--ps5-swizzle` |
 
-> **PS4 / Console:** ฟอนต์ประเภท SDF (TextMeshPro) ยังไม่สามารถสแกนหรือเปลี่ยนได้
-> เนื่องจาก Il2CppDumper ยังไม่รองรับ PS4 ELF binary format
+> **PS4 — SDF/TMP:** Il2CppDumper ยังไม่รองรับ PS4 ELF binary format
+> จึงไม่สามารถสร้าง type tree สำหรับ TMP_FontAsset ได้ — SDF fonts ถูก skip อัตโนมัติ
+>
+> **Smart scan:** การสแกนแบบ catalog-based (เฉพาะ `.assets` root + font bundles ที่ระบุใน `catalog.json`)
+> เปิดใช้งานโดยอัตโนมัติเสมอ ไม่จำเป็นต้องใส่ flag พิเศษ
 
 ---
 
@@ -56,10 +59,13 @@ Fork จาก / Forked from: [snowyegret23/Unity_Font_Replacer](https://github.
 **PS4:**
 ```
 Image0/
-  eboot.bin                      ← PS4 executable
-  Media_Data/
+  eboot.bin                      ← PS4 executable (ตรวจพบอัตโนมัติ)
+  Media/                         ← หรือ Media_Data/ — ตรวจพบอัตโนมัติทั้งคู่
     Metadata/
       global-metadata.dat        ← IL2CPP metadata
+    StreamingAssets/
+      aa/
+        catalog.json             ← Addressables catalog (ใช้สำหรับ smart scan)
 ```
 
 **PC (Mono):**
@@ -68,6 +74,9 @@ Image0/
   <GameName>_Data/
     Managed/                     ← DLL folder (ไม่ต้องตั้งค่าเพิ่ม)
 ```
+
+> **Auto-detection:** `--gamepath` รับได้ทั้ง game root, `_Data` folder, หรือ `Media` folder โดยตรง
+> ระบบจะหา data folder ให้อัตโนมัติ
 
 ---
 
@@ -236,8 +245,8 @@ Select a task:
 
 | Flag | รายละเอียด | PC | PS4 |
 |------|------------|:--:|:---:|
-| `--gamepath <path>` | Path ของโฟลเดอร์เกม | ✓ | ✓ |
-| `--parse` | สแกนฟอนต์ → บันทึกเป็น JSON | ✓ | ✓ (TTF only) |
+| `--gamepath <path>` | Path ของโฟลเดอร์เกม (รับ game root / _Data / Media) | ✓ | ✓ |
+| `--parse` | สแกนฟอนต์ → บันทึกเป็น JSON (ใช้ smart scan อัตโนมัติ) | ✓ | ✓ (TTF only) |
 | `--sarabun` | เปลี่ยนทุกฟอนต์เป็น Sarabun | ✓ | ✓ (TTF only) |
 | `--notosansthai` | เปลี่ยนทุกฟอนต์เป็น Noto Sans Thai | ✓ | ✓ (TTF only) |
 | `--list <file>` | เปลี่ยนตาม JSON mapping | ✓ | ✓ |
@@ -247,6 +256,10 @@ Select a task:
 | `--preview-export` | Export preview PNG ก่อนเปลี่ยน | ✓ | - |
 | `--scan-jobs <n>` | จำนวน parallel worker (default: 1) | ✓ | ✓ |
 | `--output-only <dir>` | บันทึกเฉพาะไฟล์ที่เปลี่ยน | ✓ | ✓ |
+| `--target-file <name>` | สแกนเฉพาะไฟล์ที่ระบุ (ชื่อไฟล์ หรือคั่นด้วย `,`) | ✓ | ✓ |
+
+> **Smart scan (ค่าเริ่มต้น):** `--parse` จะสแกนเฉพาะ `.assets` ใน data root และ `.bundle` ที่ระบุใน `catalog.json`
+> ทำให้เร็วกว่าการ scan ทุกไฟล์อย่างมาก (จาก ~15,000 ไฟล์ เหลือ ~20 ไฟล์)
 
 ---
 
@@ -424,6 +437,8 @@ print(f"Patched {n} bundle CRC(s)")
 | เครื่องมือ | ผู้สร้าง | การใช้งาน |
 |-----------|----------|-----------|
 | [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) | Perfare | สร้าง dummy DLL จาก IL2CPP games (PC) |
+| [Console-Swizzler](https://github.com/nicoco007/Console-Swizzler) | nicoco007 | อ้างอิง PS4 BC swizzle algorithm (Morton 8×8 order) |
+| [GFD-Studio](https://github.com/Joschuka/GFD-Studio) | Joschuka | อ้างอิง PS4 BC swizzle algorithm (Morton 8×8 order) |
 
 ### Python Libraries
 
