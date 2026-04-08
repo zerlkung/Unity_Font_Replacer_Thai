@@ -185,8 +185,8 @@ def _ps5_build_bc_formats_from_layout_meta() -> dict[int, tuple[int, int, int, s
 # EN: BC format table: built from layout meta {formatID: (blockW, blockH, blockBytes, decoderName)}
 _PS5_BC_FORMATS: dict[int, tuple[int, int, int, str]] = _ps5_build_bc_formats_from_layout_meta()
 
-# KR: PS4 BC swizzle은 Console-Swizzler/GFD-Studio와 동일하게 8x8 block Morton order를 사용합니다.
-# EN: PS4 BC swizzle uses the same 8x8 block Morton order seen in Console-Swizzler/GFD-Studio.
+# KR: PS4 BC swizzle은 matyamod/Console-Swizzler 및 tge-was-taken/GFD-Studio와 동일한 8x8 block Morton order를 사용합니다.
+# EN: PS4 BC swizzle uses the same 8x8 block Morton order as matyamod/Console-Swizzler and tge-was-taken/GFD-Studio.
 _PS4_MORTON_8X8: tuple[int, ...] = (
     0, 1, 8, 9, 2, 3, 10, 11,
     16, 17, 24, 25, 18, 19, 26, 27,
@@ -3576,10 +3576,10 @@ def _ps4_swizzle_bc_blocks(
     unswizzle: bool,
 ) -> bytes:
     """KR: PS4 BC block data를 swizzle/unswizzle한다.
-    Console-Swizzler와 GFD-Studio가 공통으로 사용하는 8x8 Morton block order를 따른다.
+    matyamod/Console-Swizzler 및 tge-was-taken/GFD-Studio가 공통으로 사용하는 8x8 Morton block order를 따른다.
 
     EN: Swizzle/unswizzle PS4 BC block data.
-    Follows the shared 8x8 Morton block order used by Console-Swizzler and GFD-Studio.
+    Follows the shared 8x8 Morton block order used by matyamod/Console-Swizzler and tge-was-taken/GFD-Studio.
     """
     block_count_x = math.ceil(width / block_width)
     block_count_y = math.ceil(height / block_height)

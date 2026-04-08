@@ -437,8 +437,8 @@ print(f"Patched {n} bundle CRC(s)")
 | เครื่องมือ | ผู้สร้าง | การใช้งาน |
 |-----------|----------|-----------|
 | [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) | Perfare | สร้าง dummy DLL จาก IL2CPP games (PC) |
-| [Console-Swizzler](https://github.com/nicoco007/Console-Swizzler) | nicoco007 | อ้างอิง PS4 BC swizzle algorithm (Morton 8×8 order) |
-| [GFD-Studio](https://github.com/Joschuka/GFD-Studio) | Joschuka | อ้างอิง PS4 BC swizzle algorithm (Morton 8×8 order) |
+| [Console-Swizzler](https://github.com/matyamod/Console-Swizzler) | matyamod | อ้างอิง PS4 BC swizzle algorithm (Morton 8×8 order) |
+| [GFD-Studio](https://github.com/tge-was-taken/GFD-Studio) | tge-was-taken | อ้างอิง PS4 BC swizzle algorithm (Morton 8×8 order) |
 
 ### Python Libraries
 
