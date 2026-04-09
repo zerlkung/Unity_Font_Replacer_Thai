@@ -6124,7 +6124,7 @@ def normalize_sdf_data(data: JsonDict, deep_copy: bool = True) -> JsonDict:
         result.setdefault("m_AtlasWidth", int(atlas_width))
         result.setdefault("m_AtlasHeight", int(atlas_height))
         result.setdefault("m_AtlasPadding", int(atlas_padding))
-        result.setdefault("m_AtlasRenderMode", 4118)
+        result.setdefault("m_AtlasRenderMode", 4165)
         result.setdefault("m_UsedGlyphRects", [])
         result.setdefault("m_FreeGlyphRects", [])
 
@@ -6142,7 +6142,7 @@ def normalize_sdf_data(data: JsonDict, deep_copy: bool = True) -> JsonDict:
         result["m_AtlasPadding"] = int(result.get("m_AtlasPadding", 0) or 0)
     except Exception:
         pass
-    result.setdefault("m_AtlasRenderMode", 4118)
+    result.setdefault("m_AtlasRenderMode", 4165)
     result.setdefault("m_UsedGlyphRects", [])
     result.setdefault("m_FreeGlyphRects", [])
     result.setdefault("m_FontWeightTable", [])
@@ -8201,10 +8201,10 @@ def replace_fonts_in_file(
                         replace_data = normalize_sdf_data(assets["sdf_data"])
                     try:
                         replacement_render_mode = int(
-                            replace_data.get("m_AtlasRenderMode", 4118) or 0
+                            replace_data.get("m_AtlasRenderMode", 4165) or 0
                         )
                     except Exception:
-                        replacement_render_mode = 4118
+                        replacement_render_mode = 4165
                     if effective_force_raster:
                         replacement_render_mode &= ~0x1000
                     replacement_is_sdf = (replacement_render_mode & 0x1000) != 0
@@ -8376,7 +8376,13 @@ def replace_fonts_in_file(
                             or 0
                         )
                     if "m_AtlasRenderMode" in parse_dict:
-                        parse_dict["m_AtlasRenderMode"] = replacement_render_mode
+                        # KR: 원본 게임의 렌더 모드가 교체본과 동일한 SDF 카테고리라면 원본을 보존합니다.
+                        # EN: Preserve the original game render mode when both original and replacement are in the same SDF category (0x1000 bit).
+                        original_render_mode = int(parse_dict.get("m_AtlasRenderMode", 0) or 0)
+                        original_is_sdf = (original_render_mode & 0x1000) != 0
+                        if original_is_sdf != replacement_is_sdf:
+                            parse_dict["m_AtlasRenderMode"] = replacement_render_mode
+                        # else: preserve original game render mode (both SDF or both non-SDF)
                     if "m_UsedGlyphRects" in parse_dict:
                         parse_dict["m_UsedGlyphRects"] = replace_data.get(
                             "m_UsedGlyphRects", parse_dict.get("m_UsedGlyphRects", [])

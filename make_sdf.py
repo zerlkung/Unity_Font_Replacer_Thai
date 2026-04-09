@@ -1057,12 +1057,14 @@ def generate_sdf_assets_from_ttf(
     atlas_image = Image.fromarray(atlas_rgba, mode="RGBA")
 
     # KR: TMP m_AtlasRenderMode 값:
+    #     4165 (0x1045) = SDFAA       -- SDF + 안티앨리어싱 (게임 기본값)
     #     4118 (0x1016) = SDFAA_HINTED -- SDF + 안티앨리어싱 + 힌팅
     #     4    (0x0004) = Raster_Hinted -- 비트맵 래스터 + 힌팅
     # EN: TMP m_AtlasRenderMode values:
+    #     4165 (0x1045) = SDFAA       -- SDF + anti-aliasing (game default)
     #     4118 (0x1016) = SDFAA_HINTED -- SDF + anti-aliasing + hinting
     #     4    (0x0004) = Raster_Hinted -- bitmap raster + hinting
-    atlas_render_mode_value = 4118 if normalized_render_mode == "sdf" else 4
+    atlas_render_mode_value = 4165 if normalized_render_mode == "sdf" else 4
     generated_sdf_data: JsonDict = {
         "m_FaceInfo": face_info,
         "m_GlyphTable": glyph_table,
