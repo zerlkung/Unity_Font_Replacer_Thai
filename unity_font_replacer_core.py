@@ -5293,23 +5293,26 @@ def _unitypy_supports_streaming_save() -> bool:
 
 
 def _ensure_custom_unitypy_streaming_save(lang: Language = "ko") -> None:
-    """KR: 스트리밍 저장을 지원하지 않으면 RuntimeError를 발생시킵니다.
-    EN: Raises RuntimeError if streaming save is not supported.
+    """KR: 스트리밍 저장을 지원하지 않으면 경고를 출력합니다 (표준 save()로 폴백).
+    EN: Logs a warning if streaming save is not supported (falls back to standard save()).
     """
     if _unitypy_supports_streaming_save():
         return
     unitypy_path = getattr(UnityPy, "__file__", "")
     if lang == "ko":
-        raise RuntimeError(
-            "현재 UnityPy에는 메모리 절감용 save_to() 구현이 없습니다.\n"
-            "커스텀 UnityPy를 다시 설치해 주세요.\n"
-            f"현재 로드 경로: {unitypy_path}"
+        _log_console(
+            "[경고] 현재 UnityPy에는 메모리 절감용 save_to() 구현이 없습니다.\n"
+            "  커스텀 UnityPy 빌드를 설치하면 대용량 bundle 처리 시 메모리 절약이 됩니다.\n"
+            f"  현재 로드 경로: {unitypy_path}\n"
+            "  표준 save()로 폴백합니다."
         )
-    raise RuntimeError(
-        "The currently loaded UnityPy does not provide the memory-saving save_to() APIs.\n"
-        "Reinstall the custom UnityPy build.\n"
-        f"Loaded from: {unitypy_path}"
-    )
+    else:
+        _log_console(
+            "[warning] The currently loaded UnityPy does not provide the memory-saving save_to() APIs.\n"
+            "  Installing the custom UnityPy build reduces memory usage for large bundles.\n"
+            f"  Loaded from: {unitypy_path}\n"
+            "  Falling back to standard save()."
+        )
 
 
 def _has_real_atlas_path(ref: Any) -> bool:
@@ -10950,15 +10953,15 @@ Examples:
                     _log_console(f"Compile method re-detected: {compile_method}")
             else:
                 _log_console(process.stderr)
-                if mode == "parse":
+                if mode in ("parse", "list"):
                     if is_ko:
                         _log_console(
-                            "[경고] Il2cpp 더미 DLL 생성 실패 — --parse 모드에서는 계속 진행합니다.\n"
+                            f"[경고] Il2cpp 더미 DLL 생성 실패 — {mode} 모드에서는 계속 진행합니다.\n"
                             "  TTF 폰트만 스캔되며 SDF/TMP 폰트는 생략될 수 있습니다."
                         )
                     else:
                         _log_console(
-                            "[warning] Failed to generate Il2cpp dummy DLL — continuing in --parse mode.\n"
+                            f"[warning] Failed to generate Il2cpp dummy DLL — continuing in {mode} mode.\n"
                             "  Only TTF fonts will be scanned; SDF/TMP fonts may be skipped."
                         )
                 else:
@@ -10967,14 +10970,14 @@ Examples:
                     else:
                         exit_with_error("Failed to generate Il2cpp dummy DLL", lang=lang)
         except Exception as e:
-            if mode == "parse":
+            if mode in ("parse", "list"):
                 if is_ko:
                     _log_console(
-                        f"[경고] Il2CppDumper 실행 실패: {e} — --parse 모드에서는 계속 진행합니다."
+                        f"[경고] Il2CppDumper 실행 실패: {e} — {mode} 모드에서는 계속 진행합니다."
                     )
                 else:
                     _log_console(
-                        f"[warning] Il2CppDumper failed: {e} — continuing in --parse mode."
+                        f"[warning] Il2CppDumper failed: {e} — continuing in {mode} mode."
                     )
             else:
                 if is_ko:
