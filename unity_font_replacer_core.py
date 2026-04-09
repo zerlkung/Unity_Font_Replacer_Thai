@@ -7780,6 +7780,7 @@ def replace_fonts_in_file(
     generator: TypeTreeGenerator | None = None,
     replacement_lookup: dict[tuple[str, str, str, int], str] | None = None,
     ps5_swizzle: bool = False,
+    ps4_swizzle: bool = False,
     preview_export: bool = False,
     preview_root: str | None = None,
     prefer_builtin_padding_variants: bool = False,
@@ -9005,10 +9006,37 @@ def replace_fonts_in_file(
                             except Exception:
                                 pass
                         applied_raw_alpha8 = True
+                        # KR: PS4 swizzle 모드: linear bytes를 image_data에 쓴 뒤 pixel-level Morton swizzle을 적용합니다.
+                        # EN: PS4 swizzle mode: after writing linear bytes, apply pixel-level Morton swizzle.
+                        if ps4_swizzle:
+                            tex_w = int(getattr(parse_dict, "m_Width", aw) or aw)
+                            tex_h = int(getattr(parse_dict, "m_Height", ah) or ah)
+                            ps4_ok, ps4_reason = _apply_ps4_raw_swizzle_to_texture(
+                                parse_dict, width=tex_w, height=tex_h
+                            )
+                            if lang == "ko":
+                                if ps4_ok:
+                                    _log_console(
+                                        f"  PS4 swizzle 적용: Alpha8 atlas에 Morton 8×8 pixel swizzle을 적용했습니다 ({tex_w}x{tex_h})."
+                                    )
+                                else:
+                                    _log_console(
+                                        f"  경고: PS4 swizzle 건너뜀 ({ps4_reason})."
+                                    )
+                            else:
+                                if ps4_ok:
+                                    _log_console(
+                                        f"  Applied PS4 swizzle: Morton 8×8 pixel swizzle applied to Alpha8 atlas ({tex_w}x{tex_h})."
+                                    )
+                                else:
+                                    _log_console(
+                                        f"  Warning: PS4 swizzle skipped ({ps4_reason})."
+                                    )
                         _log_debug(
                             f"[replace_texture] file={fn_without_path} assets={assets_name} path_id={obj.path_id} "
                             f"action=alpha8_raw_injection target_swizzled={target_swizzled_state} "
-                            f"mode={alpha_mode} raw_size={len(alpha_raw)} width={aw} height={ah}"
+                            f"mode={alpha_mode} raw_size={len(alpha_raw)} width={aw} height={ah} "
+                            f"ps4_swizzle={ps4_swizzle}"
                         )
                         if lang == "ko":
                             if alpha_mode == "swizzled":
@@ -10226,6 +10254,7 @@ def main_cli(lang: Language = "ko") -> None:
             "대형 SDF 다건 교체에서도 분할 저장 폴백 없이 one-shot 저장만 시도"
         )
         ps5_swizzle_help = "PS5 swizzle 자동 판별/변환 모드 (mask_x=0x385F0, mask_y=0x07A0F, rotate=90 보정)"
+        ps4_swizzle_help = "PS4 swizzle 모드: SDF atlas를 Morton 8×8 pixel swizzle로 변환 후 저장 (PS4 Alpha8 텍스처 전용)"
         verbose_help = "콘솔 로그는 유지하고, 상세 DEBUG 로그(파일/폰트/경로/버전)를 verbose.txt에 저장"
     else:
         description = "Replace Unity game fonts with Thai fonts."
@@ -10268,6 +10297,7 @@ Examples:
         split_save_force_help = "Skip one-shot and force one-by-one SDF split save for large multi-SDF replacements"
         oneshot_save_force_help = "Force one-shot save even for large multi-SDF targets (disable split-save fallback)"
         ps5_swizzle_help = "Enable PS5 swizzle detect/transform mode (mask_x=0x385F0, mask_y=0x07A0F, rotate=90 compensation)"
+        ps4_swizzle_help = "PS4 swizzle mode: apply Morton 8×8 pixel swizzle to SDF atlas before saving (for PS4 Alpha8 textures)"
         verbose_help = "Keep concise console logs and save detailed DEBUG logs (file/font/path/version) to verbose.txt"
 
     parser = argparse.ArgumentParser(
@@ -10331,6 +10361,7 @@ Examples:
         "--oneshot-save-force", action="store_true", help=oneshot_save_force_help
     )
     parser.add_argument("--ps5-swizzle", action="store_true", help=ps5_swizzle_help)
+    parser.add_argument("--ps4-swizzle", action="store_true", help=ps4_swizzle_help)
     parser.add_argument("--verbose", action="store_true", help=verbose_help)
     parser.add_argument(
         "--_validate-bundle", type=str, metavar="BUNDLE_PATH", help=argparse.SUPPRESS
@@ -10579,6 +10610,15 @@ Examples:
             _log_console("PS5 swizzle 모드: 비활성화")
         else:
             _log_console("PS5 swizzle mode: disabled")
+    if args.ps4_swizzle:
+        if is_ko:
+            _log_console(
+                "PS4 swizzle 모드: SDF atlas에 Morton 8×8 pixel swizzle을 적용합니다 (Alpha8 텍스처 전용)."
+            )
+        else:
+            _log_console(
+                "PS4 swizzle mode: applying Morton 8×8 pixel swizzle to SDF atlas before saving (Alpha8 textures)."
+            )
     if args.outline_ratio != 1.0:
         if is_ko:
             _log_console(
@@ -11350,6 +11390,7 @@ Examples:
                             generator=generator,
                             replacement_lookup=file_lookup,
                             ps5_swizzle=args.ps5_swizzle,
+                            ps4_swizzle=args.ps4_swizzle,
                             preview_export=args.preview_export,
                             preview_root=preview_root,
                             prefer_builtin_padding_variants=prefer_builtin_padding_variants,
@@ -11407,6 +11448,7 @@ Examples:
                                 generator=generator,
                                 replacement_lookup=file_ttf_lookup,
                                 ps5_swizzle=args.ps5_swizzle,
+                                ps4_swizzle=args.ps4_swizzle,
                                 preview_export=args.preview_export,
                                 preview_root=preview_root,
                                 prefer_builtin_padding_variants=prefer_builtin_padding_variants,
@@ -11502,6 +11544,7 @@ Examples:
                                         generator=generator,
                                         replacement_lookup=batch_lookup,
                                         ps5_swizzle=args.ps5_swizzle,
+                                        ps4_swizzle=args.ps4_swizzle,
                                         preview_export=args.preview_export,
                                         preview_root=preview_root,
                                         prefer_builtin_padding_variants=prefer_builtin_padding_variants,
@@ -11617,6 +11660,7 @@ Examples:
                         generator=generator,
                         replacement_lookup=replacement_lookup,
                         ps5_swizzle=args.ps5_swizzle,
+                        ps4_swizzle=args.ps4_swizzle,
                         preview_export=args.preview_export,
                         preview_root=preview_root,
                         prefer_builtin_padding_variants=prefer_builtin_padding_variants,
